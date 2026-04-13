@@ -502,6 +502,112 @@ html, body {
 }
 body:hover .key-hint { opacity: 1; }
 
+/* ── Context menu ─────────────────────────────────────── */
+.context-menu {
+  position: fixed;
+  z-index: 500;
+  min-width: 160px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+  padding: 4px 0;
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+.ctx-item:hover:not(.ctx-disabled) { background: #161b22; }
+.ctx-disabled {
+  color: var(--text-muted);
+  cursor: default;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+.ctx-icon {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+.ctx-label { flex: 1; }
+.ctx-separator {
+  height: 1px;
+  background: var(--panel-border);
+  margin: 4px 0;
+}
+
+/* ── Tabs (right column) ──────────────────────────────── */
+.tab-strip {
+  display: flex;
+  border-bottom: 1px solid var(--panel-border);
+  background: #0f1318;
+  flex-shrink: 0;
+}
+.tab-btn {
+  flex: 1;
+  padding: 7px 4px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.tab-btn:hover  { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.tab-pane {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  flex-direction: column;
+}
+.tab-pane.active { display: flex; }
+
+/* ── Mass edit panel ──────────────────────────────────── */
+.mass-edit-content {
+  padding: 4px 0 8px;
+}
+.mass-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  flex-wrap: wrap;
+}
+.me-select { flex: 1; min-width: 0; }
+.me-num    { width: 56px; flex: none; }
+
+.danger-btn {
+  padding: 4px 10px;
+  background: rgba(255,68,68,0.12);
+  border: 1px solid rgba(255,68,68,0.4);
+  border-radius: 3px;
+  color: var(--red);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.danger-btn:hover { background: rgba(255,68,68,0.25); border-color: var(--red); }
+
 /* ── Scrollbars ───────────────────────────────────────── */
 ::-webkit-scrollbar              { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track        { background: var(--panel-bg); }

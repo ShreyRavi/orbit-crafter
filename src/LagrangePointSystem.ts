@@ -109,14 +109,16 @@ export class LagrangePointSystem {
       },
       {
         label: 'L4',
-        position: toWorld(1 - mu, +Math.sqrt(3) / 2),
+        // L4 forms equilateral triangle with primary & secondary; in
+        // primary-centred coords (secondary at 1) that is (0.5, √3/2).
+        position: toWorld(0.5, +Math.sqrt(3) / 2),
         stability: mu < 0.0385 ? 'stable' : 'semi-stable',
         primaryId: primary.id,
         secondaryId: secondary.id,
       },
       {
         label: 'L5',
-        position: toWorld(1 - mu, -Math.sqrt(3) / 2),
+        position: toWorld(0.5, -Math.sqrt(3) / 2),
         stability: mu < 0.0385 ? 'stable' : 'semi-stable',
         primaryId: primary.id,
         secondaryId: secondary.id,
