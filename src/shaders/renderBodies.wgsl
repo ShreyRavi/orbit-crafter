@@ -78,18 +78,37 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     if (d > 1.0) { discard; }
 
     var alpha = 1.0 - smoothstep(0.65, 1.0, d);
+    var finalColor = in.color.rgb;
 
     // Stars: wide atmospheric glow
     if (in.bodyType < 0.5) {
         let glow = exp(-d * 2.5) * 0.6;
         alpha = max(alpha, glow);
-        // bright core
         if (d < 0.3) { alpha = 1.0; }
     }
-    // Rockets: elongated exhaust hint in fragment
-    if (in.bodyType > 3.5) {
+
+    // Rockets: slight extra brightness
+    if (in.bodyType > 3.5 && in.bodyType < 4.5) {
         alpha *= 1.2;
     }
 
-    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    // Black holes (bodyType 5): dark centre + bright accretion ring + photon ring
+    if (in.bodyType > 4.5) {
+        // Event horizon: hard black disc
+        if (d < 0.35) {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+        // Photon sphere thin ring at ~0.42
+        let ringDist = abs(d - 0.42);
+        let photonRing = exp(-ringDist * ringDist * 2000.0) * 0.9;
+        // Accretion disk warm glow
+        let disk = exp(-pow((d - 0.65) * 6.0, 2.0)) * 0.8;
+        let outerGlow = exp(-d * 3.0) * 0.35;
+        alpha = max(photonRing, max(disk, outerGlow));
+        // Accretion disk colour: orange-white inner, reddish outer
+        let diskColor = mix(vec3<f32>(1.0, 0.9, 0.5), vec3<f32>(0.8, 0.3, 0.1), d);
+        finalColor = mix(diskColor, in.color.rgb, clamp(1.0 - disk * 2.0, 0.0, 1.0));
+    }
+
+    return vec4<f32>(finalColor, in.color.a * alpha);
 }

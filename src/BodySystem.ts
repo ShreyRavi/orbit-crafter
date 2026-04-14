@@ -1,7 +1,7 @@
-import { BODY_TYPE_STAR, BODY_TYPE_PLANET, BODY_TYPE_MOON, BODY_TYPE_ASTEROID, BODY_TYPE_ROCKET } from './utils/constants.js';
+import { BODY_TYPE_STAR, BODY_TYPE_PLANET, BODY_TYPE_MOON, BODY_TYPE_ASTEROID, BODY_TYPE_ROCKET, BODY_TYPE_BLACK_HOLE } from './utils/constants.js';
 import { Vec2 } from './utils/math.js';
 
-export type BodyType = 'star' | 'planet' | 'moon' | 'asteroid' | 'rocket';
+export type BodyType = 'star' | 'planet' | 'moon' | 'asteroid' | 'rocket' | 'black_hole';
 
 export interface Body {
   id: string;
@@ -30,21 +30,23 @@ export function newBodyId(): string {
 
 export function bodyTypeToU32(t: BodyType): number {
   switch (t) {
-    case 'star':     return BODY_TYPE_STAR;
-    case 'planet':   return BODY_TYPE_PLANET;
-    case 'moon':     return BODY_TYPE_MOON;
-    case 'asteroid': return BODY_TYPE_ASTEROID;
-    case 'rocket':   return BODY_TYPE_ROCKET;
+    case 'star':       return BODY_TYPE_STAR;
+    case 'planet':     return BODY_TYPE_PLANET;
+    case 'moon':       return BODY_TYPE_MOON;
+    case 'asteroid':   return BODY_TYPE_ASTEROID;
+    case 'rocket':     return BODY_TYPE_ROCKET;
+    case 'black_hole': return BODY_TYPE_BLACK_HOLE;
   }
 }
 
 export function u32ToBodyType(n: number): BodyType {
   switch (n) {
-    case BODY_TYPE_STAR:     return 'star';
-    case BODY_TYPE_PLANET:   return 'planet';
-    case BODY_TYPE_MOON:     return 'moon';
-    case BODY_TYPE_ASTEROID: return 'asteroid';
-    default:                 return 'rocket';
+    case BODY_TYPE_STAR:       return 'star';
+    case BODY_TYPE_PLANET:     return 'planet';
+    case BODY_TYPE_MOON:       return 'moon';
+    case BODY_TYPE_ASTEROID:   return 'asteroid';
+    case BODY_TYPE_BLACK_HOLE: return 'black_hole';
+    default:                   return 'rocket';
   }
 }
 

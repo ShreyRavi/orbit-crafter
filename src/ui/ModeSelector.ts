@@ -12,6 +12,7 @@ export class ModeSelector {
     showLabels:    true,
     showLagrange:  true,
     showGravField: false,
+    showVectors:   false,
   };
 
   constructor(container: HTMLElement) {
@@ -30,6 +31,7 @@ export class ModeSelector {
           <label class="topbar-label">Overlays</label>
           <label class="toggle-label"><input type="checkbox" id="chk-trails"   ${this.flags.showTrails   ? 'checked' : ''} /> Trails</label>
           <label class="toggle-label"><input type="checkbox" id="chk-labels"   ${this.flags.showLabels   ? 'checked' : ''} /> Labels</label>
+          <label class="toggle-label"><input type="checkbox" id="chk-vectors"  ${this.flags.showVectors  ? 'checked' : ''} /> Vectors</label>
           <label class="toggle-label"><input type="checkbox" id="chk-lagrange" ${this.flags.showLagrange ? 'checked' : ''} /> L-Points</label>
           <label class="toggle-label"><input type="checkbox" id="chk-grav"     ${this.flags.showGravField? 'checked' : ''} /> Grav Field</label>
         </div>
@@ -40,6 +42,7 @@ export class ModeSelector {
             <option value="moon">Moon</option>
             <option value="asteroid">Asteroid</option>
             <option value="rocket">Rocket</option>
+            <option value="black_hole">Black Hole</option>
           </select>
           <button id="btn-add-click" class="action-btn">+ Add (click canvas)</button>
         </div>
@@ -53,6 +56,7 @@ export class ModeSelector {
     const chkIds: [string, keyof OverlayFlags][] = [
       ['chk-trails',   'showTrails'],
       ['chk-labels',   'showLabels'],
+      ['chk-vectors',  'showVectors'],
       ['chk-lagrange', 'showLagrange'],
       ['chk-grav',     'showGravField'],
     ];

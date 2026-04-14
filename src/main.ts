@@ -11,12 +11,13 @@ import { ModeSelector } from './ui/ModeSelector.js';
 import { UniverseManagerPanel } from './ui/UniverseManagerPanel.js';
 import { ContextMenu } from './ui/ContextMenu.js';
 import { MassEditPanel } from './ui/MassEditPanel.js';
-import { MAX_BODIES, ROCKET_INITIAL_FUEL } from './utils/constants.js';
+import { BodyCreateDialog } from './ui/BodyCreateDialog.js';
+import { MAX_BODIES } from './utils/constants.js';
 import { Body } from './BodySystem.js';
 import { circularOrbitVelocityAround, Vec2 } from './utils/math.js';
 
 async function main() {
-  // ── Detect WebGPU ──────────────────────────────────────────────────────────
+  // ── WebGPU check ───────────────────────────────────────────────────────────
   if (!navigator.gpu) {
     document.getElementById('webgpu-error')!.style.display = 'flex';
     return;
@@ -47,21 +48,25 @@ async function main() {
       tabBtns.forEach(b  => b.classList.remove('active'));
       tabPanes.forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
-      document.getElementById(btn.dataset.tab === 'inspector' ? 'right-panel'
-        : btn.dataset.tab === 'mass-edit' ? 'mass-panel' : 'univ-panel')
-        ?.classList.add('active');
+      document.getElementById(
+        btn.dataset.tab === 'inspector' ? 'right-panel'
+        : btn.dataset.tab === 'mass-edit' ? 'mass-panel'
+        : 'univ-panel'
+      )?.classList.add('active');
     });
   });
 
-  // ── Initialise systems ─────────────────────────────────────────────────────
-  const gpu      = new GPUPhysicsEngine();
-  const ok       = await gpu.init();
+  // ── Init systems ───────────────────────────────────────────────────────────
+  const gpu = new GPUPhysicsEngine();
+  const ok  = await gpu.init();
   if (!ok) { document.getElementById('webgpu-error')!.style.display = 'flex'; return; }
 
   const universe  = new UniverseManager(gpu);
   const renderer  = new RenderEngine(MAX_BODIES);
   const gravField = new RaymarchedGravitySystem();
-  const camera    = new CameraSystem(canvas);
+
+  // Pass overlay as event canvas so zoom/pan work (overlay is always on top)
+  const camera = new CameraSystem(canvas, overlay);
 
   await renderer.init(canvas, overlay, gpu.device);
   await gravField.init(gpu.device, navigator.gpu.getPreferredCanvasFormat());
@@ -72,37 +77,66 @@ async function main() {
 
   const sim = new SimulationEngine(gpu, universe, renderer, gravField, camera);
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ── Shared state ───────────────────────────────────────────────────────────
   let selectedBodyId: string | null = null;
+  let addMode                       = false;
+  let addModeType: Body['type']     = 'planet';
+  let dragBodyId: string | null     = null;
 
-  function addBodyAtWorld(type: Body['type'], worldPos: Vec2): void {
+  // ── Session auto-name helper ───────────────────────────────────────────────
+  const sessionCounters: Record<string, number> = {};
+  const nameMap: Record<string, string[]> = {
+    star:       ['Sirius', 'Betelgeuse', 'Canopus', 'Arcturus', 'Aldebaran'],
+    planet:     ['Kepler-22b', 'Proxima b', 'Gliese 667', 'Trappist-1e'],
+    moon:       ['Callisto', 'Oberon', 'Triton', 'Charon', 'Hyperion'],
+    asteroid:   ['Ceres', 'Vesta', 'Pallas', 'Hygiea'],
+    rocket:     ['Hermes', 'Voyager', 'Pioneer', 'New Horizons'],
+    black_hole: ['Cygnus X-1', 'V404 Cygni', 'GRO J1655'],
+  };
+  function autoNameFor(type: string): string {
+    const n    = sessionCounters[type] ?? 0;
+    sessionCounters[type] = n + 1;
+    const pool = nameMap[type] ?? ['Body'];
+    return pool[n % pool.length] + (n >= pool.length ? ` ${Math.floor(n / pool.length) + 2}` : '');
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function computeSuggestedVelocity(worldPos: Vec2): Vec2 {
     const bodies = universe.bodySystem.bodies;
-    // Find nearest massive body to compute orbital velocity
     let centralBody = bodies[0];
     let minDist = Infinity;
     for (const b of bodies) {
       const d = Math.hypot(b.position[0] - worldPos[0], b.position[1] - worldPos[1]);
       if (d < minDist) { minDist = d; centralBody = b; }
     }
-    const refMass = (centralBody?.type === 'star' || centralBody?.type === 'planet')
+    const refMass = (centralBody?.type === 'star' || centralBody?.type === 'planet' ||
+                     (centralBody as any)?.type === 'black_hole')
       ? centralBody.mass : 0;
-    const refPos  = centralBody?.position ?? [0, 0] as Vec2;
-    const refVel  = centralBody?.velocity ?? [0, 0] as Vec2;
-    const vel     = refMass > 0
+    const refPos  = centralBody?.position ?? ([0, 0] as Vec2);
+    const refVel  = centralBody?.velocity ?? ([0, 0] as Vec2);
+    return refMass > 0
       ? circularOrbitVelocityAround(worldPos, refPos, refMass, universe.params.G, refVel)
-      : [0, 0] as Vec2;
+      : ([0, 0] as Vec2);
+  }
 
-    const massMap: Record<string, number> = {
-      star: 1000, planet: 1, moon: 0.01, asteroid: 0.0001, rocket: 0.05,
-    };
+  const bodyDialog = new BodyCreateDialog();
+
+  async function openBodyDialog(type: Body['type'], worldPos: Vec2): Promise<void> {
+    const params = await bodyDialog.show(type, computeSuggestedVelocity(worldPos), autoNameFor(type));
+    if (!params) return;
     const added = universe.addBody({
-      type, position: worldPos, velocity: vel, mass: massMap[type] ?? 1,
-      fuel: type === 'rocket' ? ROCKET_INITIAL_FUEL : undefined,
-      thrustActive: false,
+      type:     params.type,
+      name:     params.name,
+      position: worldPos,
+      velocity: params.velocity,
+      mass:     params.mass,
+      radius:   params.radius,
+      color:    params.color,
+      fuel:     params.fuel,
+      thrustMagnitude: params.thrustMagnitude,
+      thrustActive:    false,
     });
-    selectedBodyId = added.id;
-    inspector.render(added);
-    // Switch to inspector tab
+    selectBodyId(added.id);
     tabBtns[0].click();
   }
 
@@ -113,8 +147,8 @@ async function main() {
   }
 
   // ── UI components ──────────────────────────────────────────────────────────
-  const bodyList  = new BodyList(leftPanel);
-  const inspector = new Inspector(rightPanel);
+  const bodyList    = new BodyList(leftPanel);
+  const inspector   = new Inspector(rightPanel);
   const controlBar  = new ControlBar(bottomBar);
   const modeBar     = new ModeSelector(topBar);
   const univManager = new UniverseManagerPanel(
@@ -123,7 +157,7 @@ async function main() {
 
   // ── Context menu ───────────────────────────────────────────────────────────
   const ctxMenu = new ContextMenu({
-    onAddBody:    (type, worldPos) => addBodyAtWorld(type, worldPos),
+    onAddBody:    (type, worldPos) => openBodyDialog(type, worldPos),
     onFocusBody:  (body) => camera.focusOn(body.position[0], body.position[1]),
     onDeleteBody: (id) => {
       universe.removeBody(id);
@@ -133,73 +167,135 @@ async function main() {
     screenToWorld: (sx, sy) => camera.screenToWorld(sx, sy),
   });
 
-  // Right-click on overlay → context menu
+  // ── Overlay (always receives pointer events) ───────────────────────────────
+  overlay.style.pointerEvents = 'auto';
+
+  // Right-click → context menu
   overlay.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    // Check if clicking near a body
     const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
-    const bodies   = universe.bodySystem.bodies;
     let nearest: Body | null = null;
     let minDist = Infinity;
-    for (const b of bodies) {
-      const screenR = camera.worldToScreenSize(b.radius);
+    for (const b of universe.bodySystem.bodies) {
       const d       = Math.hypot(b.position[0] - wx, b.position[1] - wy);
       const screenD = camera.worldToScreenSize(d);
+      const screenR = camera.worldToScreenSize(b.radius);
       if (screenD < Math.max(screenR + 8, 12) && d < minDist) {
         minDist = d; nearest = b;
       }
     }
-    if (nearest) {
-      ctxMenu.showForBody(e.clientX, e.clientY, nearest);
-    } else {
-      ctxMenu.showForCanvas(e.clientX, e.clientY);
+    nearest ? ctxMenu.showForBody(e.clientX, e.clientY, nearest)
+            : ctxMenu.showForCanvas(e.clientX, e.clientY);
+  });
+
+  // ── Mouse down: start drag or mark click origin ────────────────────────────
+  let mouseDownPos: [number, number] = [0, 0];
+
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    mouseDownPos = [e.clientX, e.clientY];
+
+    const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
+    for (const b of universe.bodySystem.bodies) {
+      const d       = Math.hypot(b.position[0] - wx, b.position[1] - wy);
+      const screenD = camera.worldToScreenSize(d);
+      const screenR = camera.worldToScreenSize(b.radius);
+      if (screenD < Math.max(screenR + 6, 10)) {
+        dragBodyId = b.id;
+        camera.blockDrag(true);
+        camera.cancelDrag();
+        return;
+      }
     }
   });
 
-  // Enable pointer events on overlay (always, for right-click)
-  overlay.style.pointerEvents = 'auto';
-
-  // Left-click on overlay only when user explicitly triggered add mode from topbar
-  let addMode = false;
-  let addModeType: Body['type'] = 'planet';
-  overlay.addEventListener('click', (e) => {
-    if (!addMode) return;
+  overlay.addEventListener('mousemove', (e) => {
+    if (!dragBodyId) return;
     const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
-    addBodyAtWorld(addModeType, [wx, wy]);
-    addMode = false;
-    overlay.style.cursor = 'default';
+    universe.updateBody(dragBodyId, { position: [wx, wy], velocity: [0, 0] });
+  });
+
+  overlay.addEventListener('mouseup', (e) => {
+    if (dragBodyId) {
+      camera.blockDrag(false);
+      dragBodyId = null;
+      return;
+    }
+    if (e.button !== 0) return;
+    const moved = Math.hypot(e.clientX - mouseDownPos[0], e.clientY - mouseDownPos[1]) > 5;
+    if (moved) return;
+
+    // Add-mode click
+    if (addMode) {
+      const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
+      openBodyDialog(addModeType, [wx, wy]);
+      addMode = false;
+      overlay.style.cursor = 'default';
+      return;
+    }
+
+    // Select body click
+    const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
+    let nearest: Body | null = null;
+    let minDist = Infinity;
+    for (const b of universe.bodySystem.bodies) {
+      const d       = Math.hypot(b.position[0] - wx, b.position[1] - wy);
+      const screenD = camera.worldToScreenSize(d);
+      const screenR = camera.worldToScreenSize(b.radius);
+      if (screenD < Math.max(screenR + 8, 12) && d < minDist) {
+        minDist = d; nearest = b;
+      }
+    }
+    selectBodyId(nearest?.id ?? null);
+  });
+
+  // ── Double-click to follow ─────────────────────────────────────────────────
+  overlay.addEventListener('dblclick', (e) => {
+    const [wx, wy] = camera.screenToWorld(e.clientX, e.clientY);
+    for (const b of universe.bodySystem.bodies) {
+      const d       = Math.hypot(b.position[0] - wx, b.position[1] - wy);
+      const screenD = camera.worldToScreenSize(d);
+      const screenR = camera.worldToScreenSize(b.radius);
+      if (screenD < Math.max(screenR + 8, 12)) {
+        const alreadyFollowing = camera.getFollowId() === b.id;
+        camera.setFollow(alreadyFollowing ? null : b.id);
+        inspector.syncFollowState(alreadyFollowing ? null : b.id);
+        selectBodyId(b.id);
+        return;
+      }
+    }
+    camera.setFollow(null);
+    inspector.syncFollowState(null);
   });
 
   // ── Mass-edit panel ────────────────────────────────────────────────────────
   new MassEditPanel(massPanel, {
     onDeleteByType: (type) => {
-      const bodies = universe.bodySystem.bodies;
-      const toRemove = type === 'all' ? bodies.map(b => b.id)
-        : bodies.filter(b => b.type === type).map(b => b.id);
+      const toRemove = type === 'all'
+        ? universe.bodySystem.bodies.map(b => b.id)
+        : universe.bodySystem.bodies.filter(b => b.type === type).map(b => b.id);
       for (const id of toRemove) {
         universe.removeBody(id);
         if (id === selectedBodyId) selectBodyId(null);
       }
     },
     onSelectByType: (type) => {
-      const bodies = universe.bodySystem.bodies;
-      const target = type === 'all' ? bodies[0]
-        : bodies.find(b => b.type === type);
+      const target = type === 'all'
+        ? universe.bodySystem.bodies[0]
+        : universe.bodySystem.bodies.find(b => b.type === type);
       if (target) { selectBodyId(target.id); tabBtns[0].click(); }
     },
     onScaleMasses: (type, factor) => {
-      const bodies = universe.bodySystem.bodies;
-      const targets = type === 'all' ? bodies : bodies.filter(b => b.type === type);
-      for (const b of targets) {
-        universe.updateBody(b.id, { mass: b.mass * factor });
-      }
+      const targets = type === 'all'
+        ? universe.bodySystem.bodies
+        : universe.bodySystem.bodies.filter(b => b.type === type);
+      for (const b of targets) universe.updateBody(b.id, { mass: b.mass * factor });
     },
     onSetVelocities: (type, vx, vy) => {
-      const bodies = universe.bodySystem.bodies;
-      const targets = type === 'all' ? bodies : bodies.filter(b => b.type === type);
-      for (const b of targets) {
-        universe.updateBody(b.id, { velocity: [vx, vy] });
-      }
+      const targets = type === 'all'
+        ? universe.bodySystem.bodies
+        : universe.bodySystem.bodies.filter(b => b.type === type);
+      for (const b of targets) universe.updateBody(b.id, { velocity: [vx, vy] });
     },
   });
 
@@ -209,9 +305,7 @@ async function main() {
     universe.removeBody(id);
     if (selectedBodyId === id) selectBodyId(null);
   };
-  bodyList.onFocus = (body) => {
-    camera.focusOn(body.position[0], body.position[1]);
-  };
+  bodyList.onFocus = (body) => camera.focusOn(body.position[0], body.position[1]);
 
   // ── Inspector callbacks ────────────────────────────────────────────────────
   inspector.onUpdate = (id, patch) => universe.updateBody(id, patch);
@@ -234,6 +328,7 @@ async function main() {
     universe.updateBody(id, { thrust: rocket.thrust, thrustActive: rocket.thrustActive });
     inspector.render(rocket);
   };
+  inspector.onFollow = (id) => camera.setFollow(id);
 
   // ── Control bar ────────────────────────────────────────────────────────────
   controlBar.onPause    = (p) => { sim.paused = p; };
@@ -241,8 +336,8 @@ async function main() {
   controlBar.onStepOnce = ()  => { sim.stepOnce(); };
 
   // ── Mode selector ──────────────────────────────────────────────────────────
-  modeBar.onModeChange    = (mode)  => { sim.setMode(mode); };
-  modeBar.onOverlayChange = (flags) => { Object.assign(sim.overlays, flags); };
+  modeBar.onModeChange    = (mode)  => sim.setMode(mode);
+  modeBar.onOverlayChange = (flags) => Object.assign(sim.overlays, flags);
   modeBar.setAddClickListener(() => {
     addModeType = modeBar.getAddType() as Body['type'];
     addMode = !addMode;
@@ -269,10 +364,27 @@ async function main() {
     const u = universe.saveSystem.getUniverse(uid);
     if (!u || u.snapshots.length === 0) return;
     universe.activeUniverseId = uid;
-    const lastSnap = u.snapshots[u.snapshots.length - 1];
-    universe.loadSnapshot(uid, lastSnap.id);
+    universe.loadSnapshot(uid, u.snapshots[u.snapshots.length - 1].id);
     renderer.clearTrails();
     renderer.uploadBodyRenderData(universe.bodySystem.bodies);
+    univManager.render();
+  };
+  univManager.onDeleteUniverse = (uid) => {
+    const wasActive = uid === universe.activeUniverseId;
+    universe.saveSystem.deleteUniverse(uid);
+    if (wasActive) {
+      let remaining = universe.saveSystem.listUniverses();
+      if (remaining.length === 0) {
+        const u = universe.saveSystem.createUniverse('Default Universe');
+        universe.activeUniverseId = u.id;
+      } else {
+        universe.activeUniverseId = remaining[0].id;
+      }
+      universe.generateInitialUniverse();
+      universe.syncGPU();
+      renderer.clearTrails();
+      renderer.uploadBodyRenderData(universe.bodySystem.bodies);
+    }
     univManager.render();
   };
 
@@ -315,13 +427,14 @@ async function main() {
   bodyList.render(universe.bodySystem);
   inspector.render(null);
 
-  // UI refresh loop
+  // UI refresh loop — also syncs follow button
   setInterval(() => {
     bodyList.render(universe.bodySystem);
     if (selectedBodyId) {
       const b = universe.bodySystem.get(selectedBodyId);
       if (b) inspector.render(b);
     }
+    inspector.syncFollowState(camera.getFollowId());
   }, 250);
 
   // Auto-save every 60s

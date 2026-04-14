@@ -32,6 +32,9 @@ export class RenderEngine {
   private readonly TRAIL_LEN = 300;
   private trailUpdateCounter = 0;
 
+  // Merge/explosion flash effects
+  private mergeEffects: Array<{wx: number; wy: number; r: number; color: string; t: number; maxT: number}> = [];
+
   constructor(maxBodies: number) {
     this.maxBodies = maxBodies;
   }
@@ -128,6 +131,7 @@ export class RenderEngine {
     cpuVel: Float32Array
   ): void {
     const n = Math.min(bodies.length, this.maxBodies);
+    this.currentN = n;   // ← fix: keep draw count in sync with body count
     if (n === 0) return;
 
     // We only update position+velocity floats (offsets 0-3 per body)
@@ -156,6 +160,11 @@ export class RenderEngine {
     writeBuffer(this.device, this.bodyRenderBuffer, new Uint8Array(data));
   }
 
+  /** Queue an explosion ring at a world position (fires for N frames). */
+  addMergeEffect(wx: number, wy: number, radius: number, color: string): void {
+    this.mergeEffects.push({ wx, wy, r: radius * 4, color, t: 0, maxT: 40 });
+  }
+
   /** Main render call – draws background + bodies via WebGPU, then overlay via Canvas 2D. */
   render(
     camera: CameraSystem,
@@ -164,7 +173,8 @@ export class RenderEngine {
     showTrails: boolean,
     showLabels: boolean,
     lagrangePoints: LagrangePoint[],
-    showLagrange: boolean
+    showLagrange: boolean,
+    showVectors = false
   ): void {
     if (this.currentN === 0) return;
 
@@ -192,7 +202,7 @@ export class RenderEngine {
     this.device.queue.submit([enc.finish()]);
 
     // ---- Canvas 2D overlay ----
-    this._renderOverlay(camera, bodies, cpuPos, showTrails, showLabels, lagrangePoints, showLagrange);
+    this._renderOverlay(camera, bodies, cpuPos, showTrails, showLabels, lagrangePoints, showLagrange, showVectors);
   }
 
   private _renderOverlay(
@@ -202,7 +212,8 @@ export class RenderEngine {
     showTrails: boolean,
     showLabels: boolean,
     lagrangePoints: LagrangePoint[],
-    showLagrange: boolean
+    showLagrange: boolean,
+    showVectors: boolean
   ): void {
     const ctx = this.overlayCtx;
     const W   = this.overlayCanvas.width;
@@ -278,6 +289,68 @@ export class RenderEngine {
         ctx.fillText(b.name, sx + sr + 4, sy - 4);
       }
     }
+
+    // Draw velocity vectors (rockets + moons + planets)
+    if (showVectors) {
+      for (let i = 0; i < n; i++) {
+        const b = bodies[i];
+        if (b.type === 'star' || b.type === 'asteroid' || (b as any).type === 'black_hole') continue;
+        const bx = cpuPos[i * 2], by = cpuPos[i * 2 + 1];
+        const [sx, sy] = camera.worldToScreen(bx, by);
+        const vx = b.velocity[0], vy = b.velocity[1];
+        const speed = Math.hypot(vx, vy);
+        if (speed < 1e-6) continue;
+
+        // Scale so 1 world-unit/step = 14 screen pixels, cap at 60px
+        const scale = Math.min(60, 14 * speed) / speed;
+        const ex = sx + vx * scale;
+        const ey = sy - vy * scale; // flip Y for screen
+        const angle = Math.atan2(ey - sy, ex - sx);
+        const headLen = 7;
+        const headAng = Math.PI / 5;
+
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.strokeStyle = b.color + 'bb';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Arrowhead
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - headLen * Math.cos(angle - headAng), ey - headLen * Math.sin(angle - headAng));
+        ctx.lineTo(ex - headLen * Math.cos(angle + headAng), ey - headLen * Math.sin(angle + headAng));
+        ctx.closePath();
+        ctx.fillStyle = b.color + 'bb';
+        ctx.fill();
+      }
+    }
+
+    // Draw merge/explosion effects
+    for (const ef of this.mergeEffects) {
+      const [sx, sy] = camera.worldToScreen(ef.wx, ef.wy);
+      const progress = ef.t / ef.maxT;
+      const alpha = Math.max(0, 1 - progress * progress);
+      const sr = camera.worldToScreenSize(ef.r * progress);
+      const hex2 = Math.floor(alpha * 255).toString(16).padStart(2, '0');
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(1, sr), 0, Math.PI * 2);
+      ctx.strokeStyle = ef.color + hex2;
+      ctx.lineWidth = 3 * (1 - progress);
+      ctx.stroke();
+      // Inner bright flash
+      if (progress < 0.3) {
+        const innerAlpha = (1 - progress / 0.3) * 0.6;
+        const innerHex = Math.floor(innerAlpha * 255).toString(16).padStart(2, '0');
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(1, sr * 0.4), 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff' + innerHex;
+        ctx.fill();
+      }
+      ef.t++;
+    }
+    this.mergeEffects = this.mergeEffects.filter(ef => ef.t < ef.maxT);
 
     // Draw Lagrange points
     if (showLagrange) {

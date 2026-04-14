@@ -41,11 +41,12 @@ export const MIN_SPEED = 0.0001;
 export const MAX_SPEED = 10000;
 
 // Body types (matches shader u32)
-export const BODY_TYPE_STAR     = 0;
-export const BODY_TYPE_PLANET   = 1;
-export const BODY_TYPE_MOON     = 2;
-export const BODY_TYPE_ASTEROID = 3;
-export const BODY_TYPE_ROCKET   = 4;
+export const BODY_TYPE_STAR       = 0;
+export const BODY_TYPE_PLANET     = 1;
+export const BODY_TYPE_MOON       = 2;
+export const BODY_TYPE_ASTEROID   = 3;
+export const BODY_TYPE_ROCKET     = 4;
+export const BODY_TYPE_BLACK_HOLE = 5;
 
 // Simulation modes
 export const MODE_EXACT      = 'EXACT';
@@ -58,6 +59,8 @@ export const PLANET_MASS = 1.0;
 export const MOON_MASS   = 0.01;
 export const ASTEROID_MASS = 0.0001;
 export const ROCKET_MASS = 0.05;
+
+export const BLACK_HOLE_MASS = 50000;
 
 // Rocket parameters
 export const ROCKET_THRUST       = 0.005;   // acceleration per frame at full thrust

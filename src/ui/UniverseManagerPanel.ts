@@ -8,9 +8,10 @@ export class UniverseManagerPanel {
   private universe: UniverseManager;
   private camera: CameraSystem;
 
-  onLoadSnapshot?:  (universeId: string, snapId: string) => void;
-  onNewUniverse?:   () => void;
+  onLoadSnapshot?:   (universeId: string, snapId: string) => void;
+  onNewUniverse?:    () => void;
   onSwitchUniverse?: (universeId: string) => void;
+  onDeleteUniverse?: (universeId: string) => void;
 
   constructor(
     container: HTMLElement,
@@ -102,7 +103,12 @@ export class UniverseManagerPanel {
       const item = document.createElement('div');
       item.className = 'univ-item' + (u.id === this.universe.activeUniverseId ? ' active' : '');
       item.innerHTML = `
-        <div class="univ-name">${u.name}</div>
+        <div class="univ-header-row">
+          <span class="univ-name">${u.name}</span>
+          ${universes.length > 1
+            ? `<button class="snap-del-btn univ-del-btn" data-univ-del="${u.id}" title="Delete universe">🗑</button>`
+            : ''}
+        </div>
         <div class="univ-meta">${u.snapshots.length} snapshots · ${new Date(u.modifiedAt).toLocaleDateString()}</div>
         ${u.snapshots.length > 0 ? `
         <details class="snap-list">
@@ -120,7 +126,12 @@ export class UniverseManagerPanel {
 
       item.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        if (target.classList.contains('snap-load-btn')) {
+        if (target.dataset.univDel) {
+          e.stopPropagation();
+          if (confirm(`Delete universe "${u.name}"? This cannot be undone.`)) {
+            this.onDeleteUniverse?.(u.id);
+          }
+        } else if (target.classList.contains('snap-load-btn')) {
           const uid = target.dataset.univ!;
           const sid = target.dataset.snap!;
           this.onLoadSnapshot?.(uid, sid);

@@ -7,10 +7,22 @@ export class Inspector {
   onUpdate?: (id: string, patch: Partial<Body>) => void;
   onThrustToggle?: (id: string, active: boolean) => void;
   onAutopilot?: (id: string) => void;
+  onFollow?: (id: string | null) => void;
+  private _followingId: string | null = null;
 
   constructor(container: HTMLElement) {
     this.container = container;
     this._renderEmpty();
+  }
+
+  /** Keep the follow button in sync when follow is broken externally (e.g. camera pan). */
+  syncFollowState(followingId: string | null): void {
+    this._followingId = followingId;
+    const btn = this.container.querySelector<HTMLButtonElement>('#btn-follow');
+    if (!btn || !this.selectedId) return;
+    const following = followingId === this.selectedId;
+    btn.classList.toggle('active', following);
+    btn.textContent = following ? '📍 Following' : '🎯 Follow';
   }
 
   private _renderEmpty(): void {
@@ -52,12 +64,18 @@ export class Inspector {
         ${fuelBar}
       </div>` : '';
 
+    const isFollowing = this._followingId === body.id;
     this.container.innerHTML = `
       <div class="panel-header">
         <span class="panel-title">Inspector</span>
         <div class="body-color-swatch" style="background:${body.color}"></div>
       </div>
       <div class="inspector-content">
+        <div class="btn-row" style="padding:4px 8px 0">
+          <button id="btn-follow" class="action-btn ${isFollowing ? 'active' : ''}" title="Follow body with camera">
+            ${isFollowing ? '📍 Following' : '🎯 Follow'}
+          </button>
+        </div>
         <div class="field-row">
           <label>Name</label>
           <input class="text-input" id="inp-name" type="text" value="${body.name}" />
@@ -65,8 +83,8 @@ export class Inspector {
         <div class="field-row">
           <label>Type</label>
           <select id="inp-type" class="select-input">
-            ${['star','planet','moon','asteroid','rocket'].map(t =>
-              `<option value="${t}" ${t === body.type ? 'selected' : ''}>${t}</option>`
+            ${['star','planet','moon','asteroid','rocket','black_hole'].map(t =>
+              `<option value="${t}" ${t === body.type ? 'selected' : ''}>${t.replace('_', ' ')}</option>`
             ).join('')}
           </select>
         </div>
@@ -152,6 +170,18 @@ export class Inspector {
     if (autopilot) {
       autopilot.addEventListener('click', () => {
         this.onAutopilot?.(body.id);
+      });
+    }
+
+    const followBtn = this.container.querySelector<HTMLButtonElement>('#btn-follow');
+    if (followBtn) {
+      followBtn.addEventListener('click', () => {
+        const nowFollowing = this._followingId === body.id;
+        this._followingId = nowFollowing ? null : body.id;
+        this.onFollow?.(this._followingId);
+        // Update button state without full re-render
+        followBtn.classList.toggle('active', !nowFollowing);
+        followBtn.textContent = !nowFollowing ? '📍 Following' : '🎯 Follow';
       });
     }
 

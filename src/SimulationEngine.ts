@@ -17,6 +17,7 @@ export interface OverlayFlags {
   showLabels:    boolean;
   showLagrange:  boolean;
   showGravField: boolean;
+  showVectors:   boolean;
 }
 
 export interface EngineStats {
@@ -46,7 +47,11 @@ export class SimulationEngine {
     showLabels:    true,
     showLagrange:  true,
     showGravField: false,
+    showVectors:   false,
   };
+
+  /** Enable collision merging (default on). */
+  enableCollisions = true;
 
   rocketInput: RocketInput = { thrustX: 0, thrustY: 0, boost: false };
 
@@ -117,6 +122,7 @@ export class SimulationEngine {
     const rebuilt = this.universe.syncGPU();
     if (rebuilt) {
       this.renderer.clearTrails();
+      this.renderer.uploadBodyRenderData(this.universe.bodySystem.bodies);
       this.onBodiesChanged?.();
     }
 
@@ -173,6 +179,11 @@ export class SimulationEngine {
       const cpuVel = this.gpu.cpuVelocities;
       this.universe.bodySystem.applyReadback(cpuPos, cpuVel);
 
+      // Collision detection (every 2 frames)
+      if (this.enableCollisions && this.frameCount % 2 === 0) {
+        this._checkCollisions();
+      }
+
       // Update Lagrange points every 30 frames
       this.lagrangeCounter++;
       if (this.lagrangeCounter % 30 === 0) {
@@ -182,8 +193,15 @@ export class SimulationEngine {
       }
     }
 
-    // Camera update
-    this.camera.update(realDt);
+    // Camera update — pass followed body position if set
+    const followId = this.camera.getFollowId();
+    let trackedPos: import('./utils/math.js').Vec2 | undefined;
+    if (followId) {
+      const fb = this.universe.bodySystem.get(followId);
+      if (fb) trackedPos = [...fb.position] as import('./utils/math.js').Vec2;
+      else    this.camera.setFollow(null);
+    }
+    this.camera.update(realDt, trackedPos);
 
     // Upload render data
     this.renderer.updatePositionsFromCPU(bodies, this.gpu.cpuPositions, this.gpu.cpuVelocities);
@@ -196,7 +214,8 @@ export class SimulationEngine {
       this.overlays.showTrails,
       this.overlays.showLabels,
       this.lagrangePoints,
-      this.overlays.showLagrange
+      this.overlays.showLagrange,
+      this.overlays.showVectors
     );
 
     // Gravity field overlay (expensive – separate WebGPU pass)
@@ -226,6 +245,73 @@ export class SimulationEngine {
       return n < HYBRID_THRESHOLD ? MODE_EXACT : MODE_BARNES_HUT;
     }
     return this.mode;
+  }
+
+  /** Check all body pairs for collision and merge on impact. */
+  private _checkCollisions(): void {
+    const bodies  = this.universe.bodySystem.bodies;
+    const n       = bodies.length;
+    const removed = new Set<string>();
+
+    for (let i = 0; i < n; i++) {
+      if (removed.has(bodies[i].id)) continue;
+      const bi = bodies[i];
+
+      for (let j = i + 1; j < n; j++) {
+        if (removed.has(bodies[j].id)) continue;
+        const bj = bodies[j];
+
+        const dist = Math.hypot(
+          bi.position[0] - bj.position[0],
+          bi.position[1] - bj.position[1]
+        );
+        if (dist >= bi.radius + bj.radius) continue;
+
+        // Bigger body absorbs smaller
+        const [big, small] = bi.mass >= bj.mass ? [bi, bj] : [bj, bi];
+        const totalMass = big.mass + small.mass;
+
+        // Conserve linear momentum
+        const vx = (big.mass * big.velocity[0] + small.mass * small.velocity[0]) / totalMass;
+        const vy = (big.mass * big.velocity[1] + small.mass * small.velocity[1]) / totalMass;
+
+        // Volume-conserving radius growth
+        const newRadius = Math.cbrt(Math.pow(big.radius, 3) + Math.pow(small.radius, 3));
+
+        // Promote type if smaller was heavier category
+        const typeRank: Record<string, number> = {
+          asteroid: 0, rocket: 0, moon: 1, planet: 2, star: 3, black_hole: 4,
+        };
+        const newType = (typeRank[small.type] ?? 0) > (typeRank[big.type] ?? 0)
+          ? small.type
+          : big.type;
+
+        this.universe.updateBody(big.id, {
+          mass: totalMass,
+          velocity: [vx, vy],
+          radius: newRadius,
+          type: newType,
+        });
+        removed.add(small.id);
+
+        // Visual explosion flash
+        this.renderer.addMergeEffect(small.position[0], small.position[1], small.radius, small.color);
+        // Larger flash for big merges (star+planet, etc.)
+        if (small.type === 'star' || small.type === 'planet' || small.type === 'black_hole') {
+          this.renderer.addMergeEffect(big.position[0], big.position[1], big.radius * 2, '#ffffff');
+        }
+
+        // Redirect follow to surviving body
+        if (this.camera.getFollowId() === small.id) {
+          this.camera.setFollow(big.id);
+        }
+      }
+    }
+
+    if (removed.size > 0) {
+      for (const id of removed) this.universe.removeBody(id);
+      this.onBodiesChanged?.();
+    }
   }
 
   stepOnce(): void {

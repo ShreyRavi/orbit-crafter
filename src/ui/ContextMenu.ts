@@ -113,10 +113,11 @@ export class ContextMenu {
 
 function typeIcon(t: Body['type']): string {
   switch (t) {
-    case 'star':     return '★';
-    case 'planet':   return '◉';
-    case 'moon':     return '◌';
-    case 'asteroid': return '⬡';
-    case 'rocket':   return '🚀';
+    case 'star':       return '★';
+    case 'planet':     return '◉';
+    case 'moon':       return '◌';
+    case 'asteroid':   return '⬡';
+    case 'rocket':     return '🚀';
+    case 'black_hole': return '⬤';
   }
 }
