@@ -14,12 +14,13 @@ import type { BodyState } from './bodyState';
 import {
   generateName,
   defaultTemperature,
+  defaultColor,
 } from './bodyState';
 import type { FeatureFlags } from './toolbar';
 import { Toolbar } from './toolbar';
 import { Sidebar } from './sidebar';
 import { computeLagrangePoints } from './lagrange';
-import { predictOrbit } from './orbitPredictor';
+import { predictOrbit, findAttractors } from './orbitPredictor';
 
 // ─── Solar system helpers ─────────────────────────────────────────────────────
 
@@ -63,9 +64,8 @@ function makeInitialBodies(): BodyData[] {
 
   const sun: BodyData = { pos: sp, vel: sv, mass: SM, radius: bodyRadius(SM) };
 
-  // Masses chosen so each planet's Hill sphere comfortably contains its moons,
-  // and each moon's F_planet/F_sun ratio exceeds 4× (Kepler threshold).
-  // COLLISION_OVERLAP=0.1 means merge only at dist < 0.1*(r1+r2).
+  // Physics radii are now tiny (collision-only). Visual size is drawn from mass log-scale.
+  // COLLISION_OVERLAP=0.06 → merge threshold ~0.3 world units, far below any moon orbit.
   const P = (a: number, e: number, deg: number, mass: number) =>
     bodyAtPerihelion(a, e, toRad(deg), SM, sp, sv, mass);
 
@@ -78,60 +78,46 @@ function makeInitialBodies(): BodyData[] {
   const uranus  = P(3840,  0.047, 320,  8000);
   const neptune = P(6020,  0.010,  30,  8000);
 
-  // Moon factory — use ACTUAL parent mass for velocity computation
   const Mo = (
     parent: BodyData, pm: number,
     a: number, e: number, deg: number, mass: number, retro = false,
   ) => bodyAtPerihelion(a, e, toRad(deg), pm, parent.pos, parent.vel, mass, retro);
 
-  // Earth: Hill sphere = 200*(30000/3e6)^(1/3) ≈ 43. Moon at a=15: F_ratio≈5.3 → Kepler ✓
-  const luna     = Mo(earth,   30000,   15, 0.055,   0, 30);
+  // Earth Hill sphere ≈ 43 @ orbit=200. Moon at a=40 inside (barely), numerical orbit shown.
+  const luna     = Mo(earth,   30000,   40, 0.055,  0, 30);
 
-  // Mars: Hill sphere ≈ 45. Phobos at a=9: F_ratio≈11 ✓, Deimos at a=15: F_ratio≈4.1 ✓
-  const phobos   = Mo(mars,    10000,    9, 0.015,  60,  2);
-  const deimos   = Mo(mars,    10000,   15, 0.000, 120,  2);
+  // Jupiter Hill sphere ≈ 335. Both moons F_ratio >> 4 → Kepler ellipses.
+  const io       = Mo(jupiter, 80000,   60, 0.004,  0, 30);
+  const ganymede = Mo(jupiter, 80000,  110, 0.001, 90, 50);
 
-  // Jupiter: Hill sphere ≈ 335. All Galilean moons F_ratio >> 4 ✓
-  const io       = Mo(jupiter, 80000,   50, 0.004,   0, 25);
-  const europa   = Mo(jupiter, 80000,   80, 0.009,  90, 20);
-  const ganymede = Mo(jupiter, 80000,  110, 0.001, 180, 40);
-  const callisto = Mo(jupiter, 80000,  130, 0.007, 270, 30);
-
-  // Saturn: Hill sphere ≈ 430. Titan at a=80: F_ratio≈20 ✓
-  const titan    = Mo(saturn,  35000,   80, 0.029,  45, 35);
-
-  // Neptune: Hill sphere ≈ 836. Triton at a=40: F_ratio≈181 ✓
-  const triton   = Mo(neptune,  8000,   40, 0.000,   0, 15, true);
+  // Saturn Hill sphere ≈ 430. Titan F_ratio ≈ 20 → Kepler.
+  const titan    = Mo(saturn,  35000,   90, 0.029, 45, 40);
 
   return [
     sun, mercury, venus, earth, luna,
-    mars, phobos, deimos,
-    jupiter, io, europa, ganymede, callisto,
+    mars,
+    jupiter, io, ganymede,
     saturn, titan,
-    uranus, neptune, triton,
+    uranus, neptune,
   ];
 }
 
 function makeInitialBodyStates(): BodyState[] {
+  // color: accurate visual disc color (independent of temperature, which drives the glow halo)
   return [
-    { name: 'Sol',      temperature: 5800, manualRadius: false },
-    { name: 'Mercury',  temperature: 440,  manualRadius: false },
-    { name: 'Venus',    temperature: 737,  manualRadius: false },
-    { name: 'Earth',    temperature: 288,  manualRadius: false },
-    { name: 'Moon',     temperature: 250,  manualRadius: false },
-    { name: 'Mars',     temperature: 210,  manualRadius: false },
-    { name: 'Phobos',   temperature: 200,  manualRadius: false },
-    { name: 'Deimos',   temperature: 200,  manualRadius: false },
-    { name: 'Jupiter',  temperature: 120,  manualRadius: false },
-    { name: 'Io',       temperature: 130,  manualRadius: false },
-    { name: 'Europa',   temperature: 110,  manualRadius: false },
-    { name: 'Ganymede', temperature: 110,  manualRadius: false },
-    { name: 'Callisto', temperature: 134,  manualRadius: false },
-    { name: 'Saturn',   temperature: 134,  manualRadius: false },
-    { name: 'Titan',    temperature:  94,  manualRadius: false },
-    { name: 'Uranus',   temperature:  76,  manualRadius: false },
-    { name: 'Neptune',  temperature:  72,  manualRadius: false },
-    { name: 'Triton',   temperature:  38,  manualRadius: false },
+    { name: 'Sol',      temperature: 5800, manualRadius: false, color: '255,248,220' },
+    { name: 'Mercury',  temperature: 440,  manualRadius: false, color: '172,157,145' },
+    { name: 'Venus',    temperature: 737,  manualRadius: false, color: '228,198,104' },
+    { name: 'Earth',    temperature: 288,  manualRadius: false, color:  '72,140,195' },
+    { name: 'Moon',     temperature: 250,  manualRadius: false, color: '175,175,178' },
+    { name: 'Mars',     temperature: 210,  manualRadius: false, color: '195, 88, 50' },
+    { name: 'Jupiter',  temperature: 120,  manualRadius: false, color: '195,162,110' },
+    { name: 'Io',       temperature: 130,  manualRadius: false, color: '224,194, 60' },
+    { name: 'Ganymede', temperature: 110,  manualRadius: false, color: '142,144,148' },
+    { name: 'Saturn',   temperature: 134,  manualRadius: false, color: '228,208,152' },
+    { name: 'Titan',    temperature:  94,  manualRadius: false, color: '208,152, 80' },
+    { name: 'Uranus',   temperature:  76,  manualRadius: false, color: '148,208,215' },
+    { name: 'Neptune',  temperature:  72,  manualRadius: false, color:  '80,108,205' },
   ];
 }
 
@@ -193,11 +179,12 @@ async function init(): Promise<void> {
     labels: true,
     lagrangePoints: true,
     lagrangeCount: 5,
-    gasExchange: true,
+    gasExchange: false, // off at start — toggle via toolbar
   };
   let selectedBodyIndex: number = -1;
   let lagrangePoints: [number, number][] | null = null;
   let orbitPaths: [number, number][][] = [];
+  let attractors: number[] = [];
   let orbitUpdateCounter: number = 0;
 
   // ── Subsystems ────────────────────────────────────────────────────────────
@@ -337,6 +324,7 @@ async function init(): Promise<void> {
       paths.push(predictOrbit(i, bodies));
     }
     orbitPaths = paths;
+    attractors = findAttractors(bodies);
   }
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
@@ -372,6 +360,7 @@ async function init(): Promise<void> {
       name: generateName(body.mass, bodyStates),
       temperature: defaultTemperature(body.mass),
       manualRadius: false,
+      color: defaultColor(body.mass),
     };
     bodyStates.push(newState);
     recomputeOrbitPaths();
@@ -408,6 +397,7 @@ async function init(): Promise<void> {
     sidebar.close();
     lagrangePoints = null;
     orbitPaths = [];
+    attractors = [];
   };
 
   input.onPauseToggle = (): void => {
@@ -477,6 +467,7 @@ async function init(): Promise<void> {
         name: survivingName,
         temperature: defaultTemperature(newMass),
         manualRadius: false,
+        color: defaultColor(newMass),
       };
       bodyStates[i] = newState;
       bodyStates.splice(j, 1);
@@ -563,6 +554,7 @@ async function init(): Promise<void> {
       selectedBodyIndex,
       lagrangePoints,
       orbitPaths,
+      attractors,
     );
 
     requestAnimationFrame(frame);

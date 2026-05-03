@@ -2,7 +2,6 @@ import type { BodyData, Camera } from './constants';
 import {
   TRAIL_BUFFER_LENGTH,
   worldToScreen,
-  bodyRadius,
 } from './constants';
 import type { BodyState } from './bodyState';
 import { isBlackHole, temperatureToColor } from './bodyState';
@@ -42,12 +41,14 @@ var<private> QUAD: array<vec2f, 6> = array<vec2f, 6>(
 );
 
 fn bodyColor(mass: f32) -> vec3f {
-  if (mass > 100000.0) {
-    return vec3f(1.0, 0.961, 0.878); // star #FFF5E0
-  } else if (mass > 1000.0) {
-    return vec3f(0.753, 0.847, 1.0); // planet #C0D8FF
+  if (mass > 500000.0) {
+    return vec3f(1.0, 0.96, 0.80);  // star: warm golden glow
+  } else if (mass > 50000.0) {
+    return vec3f(0.80, 0.88, 0.98); // gas giant: cool blue-white
+  } else if (mass > 5000.0) {
+    return vec3f(0.88, 0.84, 0.78); // rocky/ice: warm cream
   }
-  return vec3f(0.533, 0.600, 0.667); // moon #8899AA
+  return vec3f(0.65, 0.66, 0.68);   // moon: neutral grey
 }
 
 @vertex
@@ -56,7 +57,9 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertO
   let center = uniforms.canvasSize * 0.5;
   let screenPos = (body.pos - uniforms.cameraCenter) * uniforms.cameraScale + center;
   let uv = QUAD[vi];
-  let glowR = body.radius * uniforms.cameraScale * 5.0;
+  let logM = clamp(log(max(body.mass, 1.0)) / log(10.0), 0.5, 8.0);
+  let visR = max(4.0, (logM - 1.0) * 5.0 + 2.0) * uniforms.cameraScale;
+  let glowR = visR * 4.0;
   let pixelPos = screenPos + uv * glowR;
   let clip = vec4f(
     pixelPos.x / uniforms.canvasSize.x * 2.0 - 1.0,
@@ -120,6 +123,12 @@ function trailColor(mass: number): string {
   if (mass > 100_000) return '255,245,224';   // star  #FFF5E0
   if (mass > 1_000)   return '192,216,255';   // planet #C0D8FF
   return '136,153,170';                        // moon  #8899AA
+}
+
+/** Visual disc radius in screen pixels — decoupled from physics collision radius. */
+function visRadius(mass: number, scale: number): number {
+  const logM = Math.max(0.5, Math.min(8, Math.log10(Math.max(mass, 1))));
+  return Math.max(4, (logM - 1) * 5 + 2) * scale;
 }
 
 // ─── Renderer ─────────────────────────────────────────────────────────────────
@@ -293,6 +302,7 @@ export class Renderer {
     selectedBodyIndex: number,
     lagrangePoints: [number, number][] | null,
     orbitPaths: [number, number][][],
+    attractors: number[],
   ): void {
     const W = this.gpuCanvas.width;
     const H = this.gpuCanvas.height;
@@ -356,8 +366,14 @@ export class Renderer {
 
     this.drawStarfield(W, H);
 
+    // Find primary (largest) body for orbit/label filtering
+    let largestIdx = 0;
+    for (let i = 1; i < n && i < bodies.length; i++) {
+      if (bodies[i].mass > bodies[largestIdx].mass) largestIdx = i;
+    }
+
     if (featureFlags.orbitPaths) {
-      this.drawOrbitPaths(orbitPaths, camera, W, H, bodies, n, selectedBodyIndex);
+      this.drawOrbitPaths(orbitPaths, camera, W, H, bodies, n, selectedBodyIndex, attractors, largestIdx);
     }
 
     if (featureFlags.trails) {
@@ -368,7 +384,7 @@ export class Renderer {
       this.drawVelocityArrows(bodies, n, camera, W, H, dragState, selectedBodyIndex);
     }
 
-    this.drawTemperatureHalos(bodies, bodyStates, n, camera, W, H);
+    this.drawPlanetBodies(bodies, bodyStates, n, camera, W, H);
     this.drawCollisionPulses(bodies, n, camera, W, H, now);
     this.drawHoverRing(bodies, n, camera, W, H, hoveredIndex);
     this.drawDragVector(dragState, camera, W, H);
@@ -469,7 +485,7 @@ export class Renderer {
 
       const body = bodies[bi];
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const r = bodyRadius(body.mass) * camera.scale * (1 + progress * 3);
+      const r = visRadius(body.mass, camera.scale) * (1 + progress * 2);
       const alpha = 1 - progress;
 
       c.beginPath();
@@ -492,7 +508,7 @@ export class Renderer {
     if (hoveredIndex < 0 || hoveredIndex >= n) return;
     const body = bodies[hoveredIndex];
     const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-    const r = bodyRadius(body.mass) * camera.scale * 1.4;
+    const r = visRadius(body.mass, camera.scale) * 1.3;
     const c = this.ctx2d;
     c.beginPath();
     c.arc(sx, sy, r, 0, Math.PI * 2);
@@ -563,8 +579,8 @@ export class Renderer {
   ): void {
     if (!ghostBody) return;
     const [sx, sy] = worldToScreen(ghostBody.pos, camera, W, H);
-    const r   = bodyRadius(ghostBody.mass) * camera.scale;
-    const glowR = r * 5;
+    const r   = visRadius(ghostBody.mass, camera.scale);
+    const glowR = r * 3;
     const c = this.ctx2d;
 
     c.save();
@@ -654,11 +670,21 @@ export class Renderer {
     bodies: BodyData[],
     n: number,
     selectedIdx: number,
+    attractors: number[],
+    largestIdx: number,
   ): void {
     const c = this.ctx2d;
     for (let i = 0; i < paths.length && i < n; i++) {
       const path = paths[i];
       if (path.length < 2) continue;
+
+      // Show orbit if: body orbits Sun (always), selected body, or moon of selected body
+      const att = attractors[i] ?? -1;
+      const showAlways = att === largestIdx && i !== largestIdx;
+      const showSelected = i === selectedIdx;
+      const showMoonOfSelected = selectedIdx >= 0 && att === selectedIdx;
+      if (!showAlways && !showSelected && !showMoonOfSelected) continue;
+
       const color = trailColor(bodies[i]?.mass ?? 1);
       const isSelected = i === selectedIdx;
 
@@ -746,32 +772,44 @@ export class Renderer {
     H: number,
     selectedIdx: number,
   ): void {
-    // Find the largest-mass body to always label it (the Sun / primary star)
     let largestIdx = 0;
     for (let i = 1; i < n && i < bodies.length; i++) {
       if (bodies[i].mass > bodies[largestIdx].mass) largestIdx = i;
     }
 
     const c = this.ctx2d;
-    c.font = `bold 15px 'Geist Mono', monospace`;
     c.textAlign = 'center';
     c.textBaseline = 'bottom';
 
     for (let i = 0; i < n && i < bodies.length; i++) {
-      // Only label the selected body and the largest (primary) body
-      if (i !== selectedIdx && i !== largestIdx) continue;
       const body = bodies[i];
       const state = states[i];
       if (!state) continue;
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const r = Math.max(6, bodyRadius(body.mass) * camera.scale);
-      const labelY = sy - r - 5;
+      const r = visRadius(body.mass, camera.scale);
+      const labelY = sy - r - 4;
 
       const isSelected = i === selectedIdx;
+      const isPrimary = i === largestIdx;
+
       c.save();
-      c.shadowColor = 'rgba(0,0,0,0.8)';
-      c.shadowBlur = 4;
-      c.fillStyle = isSelected ? 'rgba(255,165,0,0.95)' : 'rgba(255,255,255,0.80)';
+      c.shadowColor = 'rgba(0,0,0,0.9)';
+      c.shadowBlur = 3;
+
+      if (isSelected) {
+        c.font = `bold 14px 'Geist Mono', monospace`;
+        c.fillStyle = 'rgba(255,165,0,0.95)';
+      } else if (isPrimary) {
+        c.font = `bold 13px 'Geist Mono', monospace`;
+        c.fillStyle = 'rgba(255,248,220,0.85)';
+      } else if (body.mass > 1000) {
+        c.font = `11px 'Geist Mono', monospace`;
+        c.fillStyle = 'rgba(200,220,255,0.65)';
+      } else {
+        c.font = `10px 'Geist Mono', monospace`;
+        c.fillStyle = 'rgba(180,185,195,0.50)';
+      }
+
       c.fillText(state.name, sx, labelY);
       c.restore();
     }
@@ -871,9 +909,10 @@ export class Renderer {
               const vx = (bvx * cos - bvy * sin) * speed;
               const vy = (bvx * sin + bvy * cos) * speed;
               const color = trailColor(src.mass);
+              const spawnR = Math.max(3, Math.log10(Math.max(src.mass, 1)) * 3);
               this._gasParticles.push({
-                x: src.pos[0] + (this._gasRng_next() - 0.5) * src.radius * 2,
-                y: src.pos[1] + (this._gasRng_next() - 0.5) * src.radius * 2,
+                x: src.pos[0] + (this._gasRng_next() - 0.5) * spawnR,
+                y: src.pos[1] + (this._gasRng_next() - 0.5) * spawnR,
                 vx,
                 vy,
                 life: 0,
@@ -885,19 +924,23 @@ export class Renderer {
       }
     }
 
-    // Draw particles
+    // Draw particles with soft glow
     for (const p of this._gasParticles) {
-      const alpha = (1 - p.life) * 0.7;
+      const alpha = (1 - p.life) * 0.75;
       if (alpha <= 0) continue;
       const [sx, sy] = worldToScreen([p.x, p.y], camera, W, H);
+      const pr = 3 * camera.scale + 1.5;
+      const grad = c.createRadialGradient(sx, sy, 0, sx, sy, pr);
+      grad.addColorStop(0,   `rgba(${p.color},${alpha.toFixed(3)})`);
+      grad.addColorStop(1,   `rgba(${p.color},0)`);
       c.beginPath();
-      c.arc(sx, sy, 2, 0, Math.PI * 2);
-      c.fillStyle = `rgba(${p.color},${alpha.toFixed(3)})`;
+      c.arc(sx, sy, pr, 0, Math.PI * 2);
+      c.fillStyle = grad;
       c.fill();
     }
   }
 
-  private drawTemperatureHalos(
+  private drawPlanetBodies(
     bodies: BodyData[],
     states: BodyState[],
     n: number,
@@ -913,18 +956,64 @@ export class Renderer {
       if (isBlackHole(body.mass, body.radius)) continue;
 
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const r = Math.max(3, body.radius * camera.scale);
-      const rgb = temperatureToColor(state.temperature);
+      const vr = visRadius(body.mass, camera.scale);
 
-      // Coloured atmospheric rim — subtle glow ring just outside the body
-      const grad = c.createRadialGradient(sx, sy, r * 0.85, sx, sy, r * 2.2);
-      grad.addColorStop(0,   `rgba(${rgb},0.28)`);
-      grad.addColorStop(0.5, `rgba(${rgb},0.10)`);
-      grad.addColorStop(1,   `rgba(${rgb},0)`);
+      // Atmospheric glow halo (temperature-based)
+      const rgb = temperatureToColor(state.temperature);
+      const haloGrad = c.createRadialGradient(sx, sy, vr * 0.85, sx, sy, vr * 2.8);
+      haloGrad.addColorStop(0,   `rgba(${rgb},0.22)`);
+      haloGrad.addColorStop(0.4, `rgba(${rgb},0.07)`);
+      haloGrad.addColorStop(1,   `rgba(${rgb},0)`);
       c.beginPath();
-      c.arc(sx, sy, r * 2.2, 0, Math.PI * 2);
-      c.fillStyle = grad;
+      c.arc(sx, sy, vr * 2.8, 0, Math.PI * 2);
+      c.fillStyle = haloGrad;
       c.fill();
+
+      // Solid disc with radial lighting gradient
+      const discColor = state.color || '160,162,165';
+      const parts = discColor.split(',');
+      const cr = parseInt(parts[0].trim());
+      const cg = parseInt(parts[1].trim());
+      const cb = parseInt(parts[2].trim());
+      const hr = Math.min(255, cr + 40);
+      const hg = Math.min(255, cg + 40);
+      const hb = Math.min(255, cb + 40);
+
+      const discGrad = c.createRadialGradient(sx - vr * 0.3, sy - vr * 0.3, 0, sx, sy, vr);
+      discGrad.addColorStop(0, `rgb(${hr},${hg},${hb})`);
+      discGrad.addColorStop(1, `rgb(${Math.max(0, cr - 20)},${Math.max(0, cg - 20)},${Math.max(0, cb - 20)})`);
+
+      c.beginPath();
+      c.arc(sx, sy, vr, 0, Math.PI * 2);
+      c.fillStyle = discGrad;
+      c.fill();
+
+      // Gas giant horizontal bands (Jupiter-class and Saturn-class)
+      if (body.mass > 25000 && body.mass < 500000) {
+        c.save();
+        c.beginPath();
+        c.arc(sx, sy, vr, 0, Math.PI * 2);
+        c.clip();
+
+        const dk = (p: number) =>
+          `rgba(${Math.max(0, cr - p)},${Math.max(0, cg - p)},${Math.max(0, cb - p)},0.22)`;
+        const lt = (p: number) =>
+          `rgba(${Math.min(255, cr + p)},${Math.min(255, cg + p)},${Math.min(255, cb + p)},0.18)`;
+
+        const bands = [
+          { yFrac: -0.55, hFrac: 0.18, col: dk(30) },
+          { yFrac: -0.12, hFrac: 0.22, col: lt(25) },
+          { yFrac:  0.22, hFrac: 0.18, col: dk(25) },
+          { yFrac:  0.55, hFrac: 0.15, col: lt(20) },
+        ];
+
+        for (const band of bands) {
+          c.fillStyle = band.col;
+          c.fillRect(sx - vr, sy + band.yFrac * vr - (band.hFrac * vr) / 2, vr * 2, band.hFrac * vr);
+        }
+
+        c.restore();
+      }
     }
   }
 

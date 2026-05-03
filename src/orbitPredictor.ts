@@ -1,6 +1,29 @@
 import type { BodyData } from './constants';
 import { G, DT, SOFTENING_EPSILON } from './constants';
 
+/**
+ * For each body, returns the index of its dominant gravitational attractor.
+ * Returns -1 for the most massive body (it has no dominant attractor).
+ */
+export function findAttractors(bodies: BodyData[]): number[] {
+  return bodies.map((body, idx) => {
+    let maxForce = 0;
+    let attractorIdx = -1;
+    for (let j = 0; j < bodies.length; j++) {
+      if (j === idx) continue;
+      const dx = bodies[j].pos[0] - body.pos[0];
+      const dy = bodies[j].pos[1] - body.pos[1];
+      const r2 = dx * dx + dy * dy + SOFTENING_EPSILON * SOFTENING_EPSILON;
+      const force = G * bodies[j].mass / r2;
+      if (force > maxForce) {
+        maxForce = force;
+        attractorIdx = j;
+      }
+    }
+    return attractorIdx;
+  });
+}
+
 type Point2D = [number, number];
 
 export function predictOrbit(idx: number, bodies: BodyData[]): Point2D[] {

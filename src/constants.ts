@@ -15,13 +15,14 @@ export const BODY_STRIDE = 32; // bytes per body in GPU buffer
 
 export const C_SIM = 2000;
 export const SCHWARZSCHILD_CONST = 2 / (C_SIM * C_SIM);
-export const COLLISION_OVERLAP = 0.1;  // merge when dist < factor*(r1+r2)
+export const COLLISION_OVERLAP = 0.06; // merge when dist < factor*(r1+r2)
 export const CLOSE_APPROACH_FACTOR = 3.0;
 export const DEFAULT_GHOST_MASS_LOG = 4;  // was 2, now 10^4
 export const ORBIT_PREDICT_INTERVAL = 90;  // frames between orbit recalculations
 
 export function bodyRadius(mass: number): number {
-  return Math.max(2, Math.min(120, Math.sqrt(mass) * 0.5));
+  // Tiny physics radius (collision detection only) — visual size is drawn separately
+  return Math.max(1, Math.min(5, Math.log10(Math.max(mass, 1)) * 1.2 - 1));
 }
 
 // G parameter kept explicit so tests can pass in a custom G value
