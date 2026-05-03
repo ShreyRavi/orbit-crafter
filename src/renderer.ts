@@ -5,7 +5,7 @@ import {
   bodyRadius,
 } from './constants';
 import type { BodyState } from './bodyState';
-import { isBlackHole } from './bodyState';
+import { isBlackHole, temperatureToColor } from './bodyState';
 import type { FeatureFlags } from './toolbar';
 
 // ─── WGSL shaders ────────────────────────────────────────────────────────────
@@ -368,6 +368,7 @@ export class Renderer {
       this.drawVelocityArrows(bodies, n, camera, W, H, dragState, selectedBodyIndex);
     }
 
+    this.drawTemperatureHalos(bodies, bodyStates, n, camera, W, H);
     this.drawCollisionPulses(bodies, n, camera, W, H, now);
     this.drawHoverRing(bodies, n, camera, W, H, hoveredIndex);
     this.drawDragVector(dragState, camera, W, H);
@@ -389,9 +390,9 @@ export class Renderer {
 
     // ── HUD ───────────────────────────────────────────────────────────────
     this.hudEl.innerHTML =
-      `<span class="label">N </span>${n}<br>` +
-      `<span class="label">× </span>${timeScale.toFixed(1)}` +
-      (paused ? '<br><span class="label">PAUSED</span>' : '');
+      `<span class="label">BODIES</span> ${n}` +
+      `<br><span class="label">SPEED</span>  ${timeScale.toFixed(1)}×` +
+      (paused ? '<br><span class="ksp-status">● PAUSED</span>' : '');
   }
 
   destroy(): void {
@@ -661,19 +662,72 @@ export class Renderer {
 
       c.save();
       c.setLineDash([4, 6]);
-      c.strokeStyle = `rgba(${color},0.30)`;
+      c.strokeStyle = `rgba(${color},0.28)`;
       c.lineWidth = 1;
       c.beginPath();
       for (let j = 0; j < path.length; j++) {
         const [wx, wy] = path[j];
         const [sx, sy] = worldToScreen([wx, wy], camera, W, H);
-        if (j === 0) {
-          c.moveTo(sx, sy);
-        } else {
-          c.lineTo(sx, sy);
-        }
+        if (j === 0) c.moveTo(sx, sy);
+        else c.lineTo(sx, sy);
       }
       c.stroke();
+      c.restore();
+
+      // ── Apsis markers ──────────────────────────────────────────────────────
+      if (path.length < 4) continue;
+
+      // Find dominant attractor by locating body closest to orbit mean centre
+      let sumX = 0, sumY = 0;
+      for (const pt of path) { sumX += pt[0]; sumY += pt[1]; }
+      const mX = sumX / path.length, mY = sumY / path.length;
+      let attIdx = -1, minAttD = Infinity;
+      for (let j = 0; j < n && j < bodies.length; j++) {
+        if (j === i) continue;
+        const dx = bodies[j].pos[0] - mX, dy = bodies[j].pos[1] - mY;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < minAttD) { minAttD = d; attIdx = j; }
+      }
+      if (attIdx < 0) continue;
+      const ap = bodies[attIdx].pos;
+
+      let minD = Infinity, maxD = -Infinity;
+      let periPt = path[0], apoPt = path[0];
+      for (const pt of path) {
+        const dx = pt[0] - ap[0], dy = pt[1] - ap[1];
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < minD) { minD = d; periPt = pt; }
+        if (d > maxD) { maxD = d; apoPt = pt; }
+      }
+
+      // Only show when orbit is meaningfully eccentric (>2% variation)
+      if (maxD / Math.max(minD, 1) < 1.02) continue;
+
+      c.save();
+      c.font = `bold 12px 'Geist Mono', monospace`;
+      c.textBaseline = 'middle';
+      c.shadowColor = 'rgba(0,0,0,0.9)';
+      c.shadowBlur = 4;
+
+      // Periapsis — orange
+      const [psx, psy] = worldToScreen(periPt, camera, W, H);
+      c.beginPath();
+      c.arc(psx, psy, 3.5, 0, Math.PI * 2);
+      c.fillStyle = '#FF8C00';
+      c.fill();
+      c.fillStyle = '#FF8C00';
+      c.textAlign = 'left';
+      c.fillText('Pe', psx + 6, psy);
+
+      // Apoapsis — cyan
+      const [asx, asy] = worldToScreen(apoPt, camera, W, H);
+      c.beginPath();
+      c.arc(asx, asy, 3.5, 0, Math.PI * 2);
+      c.fillStyle = '#40A0FF';
+      c.fill();
+      c.fillStyle = '#40A0FF';
+      c.fillText('Ap', asx + 6, asy);
+
       c.restore();
     }
   }
@@ -688,7 +742,7 @@ export class Renderer {
     selectedIdx: number,
   ): void {
     const c = this.ctx2d;
-    c.font = `11px 'Geist Mono', monospace`;
+    c.font = `bold 15px 'Geist Mono', monospace`;
     c.textAlign = 'center';
     c.textBaseline = 'bottom';
 
@@ -697,12 +751,16 @@ export class Renderer {
       const state = states[i];
       if (!state) continue;
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const r = bodyRadius(body.mass) * camera.scale;
-      const labelY = sy - r - 6;
+      const r = Math.max(6, bodyRadius(body.mass) * camera.scale);
+      const labelY = sy - r - 5;
 
       const isSelected = i === selectedIdx;
-      c.fillStyle = isSelected ? 'rgba(120,200,255,0.90)' : 'rgba(255,255,255,0.55)';
+      c.save();
+      c.shadowColor = 'rgba(0,0,0,0.8)';
+      c.shadowBlur = 4;
+      c.fillStyle = isSelected ? 'rgba(255,165,0,0.95)' : 'rgba(255,255,255,0.80)';
       c.fillText(state.name, sx, labelY);
+      c.restore();
     }
   }
 
@@ -716,21 +774,21 @@ export class Renderer {
     if (count === 0) return;
     const c = this.ctx2d;
     const labels = ['L1', 'L2', 'L3', 'L4', 'L5'];
-    // count=2 means only L4 and L5 (indices 3,4)
-    // count=5 means all
     const startIdx = count === 2 ? 3 : 0;
 
     c.save();
-    c.font = `10px 'Geist Mono', monospace`;
+    c.font = `bold 13px 'Geist Mono', monospace`;
     c.textAlign = 'center';
     c.textBaseline = 'middle';
+    c.shadowColor = 'rgba(0,0,0,0.6)';
+    c.shadowBlur = 3;
 
     for (let i = startIdx; i < points.length && i < 5; i++) {
       const pt = points[i];
       const [sx, sy] = worldToScreen(pt, camera, W, H);
-      const s = 5;
-      c.strokeStyle = 'rgba(100,220,150,0.60)';
-      c.lineWidth = 1.5;
+      const s = 8;
+      c.strokeStyle = 'rgba(80,230,130,0.75)';
+      c.lineWidth = 2;
       c.beginPath();
       c.moveTo(sx - s, sy - s);
       c.lineTo(sx + s, sy + s);
@@ -738,8 +796,8 @@ export class Renderer {
       c.lineTo(sx - s, sy + s);
       c.stroke();
 
-      c.fillStyle = 'rgba(100,220,150,0.75)';
-      c.fillText(labels[i], sx, sy - 10);
+      c.fillStyle = 'rgba(100,240,150,0.90)';
+      c.fillText(labels[i], sx, sy - 14);
     }
     c.restore();
   }
@@ -820,6 +878,37 @@ export class Renderer {
       c.beginPath();
       c.arc(sx, sy, 2, 0, Math.PI * 2);
       c.fillStyle = `rgba(${p.color},${alpha.toFixed(3)})`;
+      c.fill();
+    }
+  }
+
+  private drawTemperatureHalos(
+    bodies: BodyData[],
+    states: BodyState[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    const c = this.ctx2d;
+    for (let i = 0; i < n && i < bodies.length; i++) {
+      const body = bodies[i];
+      const state = states[i];
+      if (!state) continue;
+      if (isBlackHole(body.mass, body.radius)) continue;
+
+      const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+      const r = Math.max(3, body.radius * camera.scale);
+      const rgb = temperatureToColor(state.temperature);
+
+      // Coloured atmospheric rim — subtle glow ring just outside the body
+      const grad = c.createRadialGradient(sx, sy, r * 0.85, sx, sy, r * 2.2);
+      grad.addColorStop(0,   `rgba(${rgb},0.28)`);
+      grad.addColorStop(0.5, `rgba(${rgb},0.10)`);
+      grad.addColorStop(1,   `rgba(${rgb},0)`);
+      c.beginPath();
+      c.arc(sx, sy, r * 2.2, 0, Math.PI * 2);
+      c.fillStyle = grad;
       c.fill();
     }
   }

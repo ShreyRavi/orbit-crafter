@@ -1,16 +1,10 @@
 import type { BodyData, Camera } from './constants';
 import {
   G,
-  STAR_MASS,
-  PLANET_MASS,
-  MOON_MASS,
-  PLANET_ORBIT_R,
-  MOON_ORBIT_R,
   CAMERA_SCALE_MIN,
   CAMERA_SCALE_MAX,
   MAX_BODIES,
   bodyRadius,
-  circularOrbitVelocity,
   ORBIT_PREDICT_INTERVAL,
 } from './constants';
 import { PhysicsEngine } from './physicsEngine';
@@ -27,40 +21,106 @@ import { Sidebar } from './sidebar';
 import { computeLagrangePoints } from './lagrange';
 import { predictOrbit } from './orbitPredictor';
 
+// ─── Solar system helpers ─────────────────────────────────────────────────────
+
+function toRad(deg: number): number {
+  return deg * Math.PI / 180;
+}
+
+/**
+ * Place a body at its orbital perihelion.
+ * periAngle = angle (radians) of the perihelion direction from +x axis.
+ * retrograde = true reverses orbital direction (e.g. Triton).
+ */
+function bodyAtPerihelion(
+  a: number,
+  e: number,
+  periAngle: number,
+  centralMass: number,
+  centralPos: [number, number],
+  centralVel: [number, number],
+  myMass: number,
+  retrograde = false,
+): BodyData {
+  const mu  = G * centralMass;
+  const r_p = a * (1 - e);
+  const v_p = Math.sqrt(Math.max(0, mu * (1 + e) / r_p));
+  const ca  = Math.cos(periAngle);
+  const sa  = Math.sin(periAngle);
+  const px  = centralPos[0] + r_p * ca;
+  const py  = centralPos[1] + r_p * sa;
+  const vx  = retrograde ? centralVel[0] + v_p * sa : centralVel[0] - v_p * sa;
+  const vy  = retrograde ? centralVel[1] - v_p * ca : centralVel[1] + v_p * ca;
+  return { pos: [px, py], vel: [vx, vy], mass: myMass, radius: bodyRadius(myMass) };
+}
+
 // ─── Initial bodies ────────────────────────────────────────────────────────────
 
 function makeInitialBodies(): BodyData[] {
-  const star: BodyData = {
-    pos: [0, 0],
-    vel: [0, 0],
-    mass: STAR_MASS,
-    radius: bodyRadius(STAR_MASS),
-  };
+  const SM: number = 1e6;
+  const sp: [number, number] = [0, 0];
+  const sv: [number, number] = [0, 0];
 
-  const vPlanet = circularOrbitVelocity(G, STAR_MASS, PLANET_ORBIT_R);
-  const planet: BodyData = {
-    pos: [PLANET_ORBIT_R, 0],
-    vel: [0, vPlanet],
-    mass: PLANET_MASS,
-    radius: bodyRadius(PLANET_MASS),
-  };
+  const sun: BodyData = { pos: sp, vel: sv, mass: SM, radius: bodyRadius(SM) };
 
-  const vMoon = circularOrbitVelocity(G, PLANET_MASS, MOON_ORBIT_R);
-  const moon: BodyData = {
-    pos: [PLANET_ORBIT_R + MOON_ORBIT_R, 0],
-    vel: [0, vPlanet + vMoon],
-    mass: MOON_MASS,
-    radius: bodyRadius(MOON_MASS),
-  };
+  // Planet factory — orbits Sun at given semi-major axis (AU equiv), eccentricity, perihelion angle
+  const P = (a: number, e: number, deg: number, mass: number) =>
+    bodyAtPerihelion(a, e, toRad(deg), SM, sp, sv, mass);
 
-  return [star, planet, moon];
+  const mercury = P(78,    0.206, 320, 100);
+  const venus   = P(144,   0.007,  45, 350);
+  const earth   = P(200,   0.017,  90, 400);
+  const mars    = P(304,   0.093, 150, 120);
+  const jupiter = P(1040,  0.049, 210, 20000);
+  const saturn  = P(1900,  0.057, 270, 8000);
+  const uranus  = P(3840,  0.047, 320, 1200);
+  const neptune = P(6020,  0.010,  30, 1400);
+
+  // Moon factory — orbits a planet
+  const Mo = (
+    parent: BodyData, pm: number,
+    a: number, e: number, deg: number, mass: number, retro = false,
+  ) => bodyAtPerihelion(a, e, toRad(deg), pm, parent.pos, parent.vel, mass, retro);
+
+  const luna     = Mo(earth,   400,     25, 0.055,   0, 30);
+  const phobos   = Mo(mars,    120,      8, 0.015,  60,  2);
+  const deimos   = Mo(mars,    120,     14, 0.000, 120,  2);
+  const io       = Mo(jupiter, 20000,   50, 0.004,   0, 25);
+  const europa   = Mo(jupiter, 20000,   80, 0.009,  90, 20);
+  const ganymede = Mo(jupiter, 20000,  128, 0.001, 180, 40);
+  const callisto = Mo(jupiter, 20000,  226, 0.007, 270, 30);
+  const titan    = Mo(saturn,  8000,    80, 0.029,  45, 35);
+  const triton   = Mo(neptune, 1400,    40, 0.000,   0, 15, true);
+
+  return [
+    sun, mercury, venus, earth, luna,
+    mars, phobos, deimos,
+    jupiter, io, europa, ganymede, callisto,
+    saturn, titan,
+    uranus, neptune, triton,
+  ];
 }
 
 function makeInitialBodyStates(): BodyState[] {
   return [
-    { name: 'Sol',   temperature: 5800, manualRadius: false },
-    { name: 'Earth', temperature: 300,  manualRadius: false },
-    { name: 'Luna',  temperature: 100,  manualRadius: false },
+    { name: 'Sol',      temperature: 5800, manualRadius: false },
+    { name: 'Mercury',  temperature: 440,  manualRadius: false },
+    { name: 'Venus',    temperature: 737,  manualRadius: false },
+    { name: 'Earth',    temperature: 288,  manualRadius: false },
+    { name: 'Moon',     temperature: 250,  manualRadius: false },
+    { name: 'Mars',     temperature: 210,  manualRadius: false },
+    { name: 'Phobos',   temperature: 200,  manualRadius: false },
+    { name: 'Deimos',   temperature: 200,  manualRadius: false },
+    { name: 'Jupiter',  temperature: 120,  manualRadius: false },
+    { name: 'Io',       temperature: 130,  manualRadius: false },
+    { name: 'Europa',   temperature: 110,  manualRadius: false },
+    { name: 'Ganymede', temperature: 110,  manualRadius: false },
+    { name: 'Callisto', temperature: 134,  manualRadius: false },
+    { name: 'Saturn',   temperature: 134,  manualRadius: false },
+    { name: 'Titan',    temperature:  94,  manualRadius: false },
+    { name: 'Uranus',   temperature:  76,  manualRadius: false },
+    { name: 'Neptune',  temperature:  72,  manualRadius: false },
+    { name: 'Triton',   temperature:  38,  manualRadius: false },
   ];
 }
 
@@ -111,7 +171,7 @@ async function init(): Promise<void> {
   });
 
   // ── Camera ────────────────────────────────────────────────────────────────
-  const camera: Camera = { center: [0, 0], scale: 1.0 };
+  const camera: Camera = { center: [0, 0], scale: 0.5 };
 
   // ── State ─────────────────────────────────────────────────────────────────
   let bodyStates: BodyState[] = makeInitialBodyStates();

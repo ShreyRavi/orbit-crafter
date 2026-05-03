@@ -7,8 +7,8 @@ export const MOON_MASS = 1;
 export const PLANET_ORBIT_R = 200;
 export const MOON_ORBIT_R = 30;
 export const TRAIL_BUFFER_LENGTH = 300;
-export const CAMERA_SCALE_MIN = 0.25;
-export const CAMERA_SCALE_MAX = 8.0;
+export const CAMERA_SCALE_MIN = 0.04;
+export const CAMERA_SCALE_MAX = 20.0;
 export const SOFTENING_EPSILON = 0.25;
 export const MAX_BODIES = 64;
 export const BODY_STRIDE = 32; // bytes per body in GPU buffer
@@ -18,7 +18,7 @@ export const SCHWARZSCHILD_CONST = 2 / (C_SIM * C_SIM);
 export const COLLISION_OVERLAP = 0.5;  // merge when dist < factor*(r1+r2)
 export const CLOSE_APPROACH_FACTOR = 3.0;
 export const DEFAULT_GHOST_MASS_LOG = 4;  // was 2, now 10^4
-export const ORBIT_PREDICT_INTERVAL = 30;  // frames between orbit recalculations
+export const ORBIT_PREDICT_INTERVAL = 90;  // frames between orbit recalculations
 
 export function bodyRadius(mass: number): number {
   return Math.max(2, Math.min(80, Math.sqrt(mass) * 0.5));

@@ -111,16 +111,22 @@ export class Sidebar {
     this.schwarVal = this.el.querySelector('.sb-bh-warning')!;
     this.bhWarning = this.schwarVal;
 
+    // Helper: fire on blur OR Enter key
+    const onCommit = (input: HTMLInputElement, fn: () => void) => {
+      input.addEventListener('change', fn);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { fn(); input.blur(); } });
+    };
+
     // Event listeners
     const closeBtn = this.el.querySelector('.sb-close')!;
     closeBtn.addEventListener('click', () => this.callbacks.onClose());
 
-    this.nameInput.addEventListener('change', () => {
+    onCommit(this.nameInput, () => {
       if (this.currentIdx < 0) return;
       this.callbacks.onNameChange(this.currentIdx, this.nameInput.value);
     });
 
-    this.massInput.addEventListener('change', () => {
+    onCommit(this.massInput, () => {
       if (this.currentIdx < 0) return;
       const mass = parseFloat(this.massInput.value);
       if (isFinite(mass) && mass > 0) {
@@ -128,7 +134,7 @@ export class Sidebar {
       }
     });
 
-    this.radiusInput.addEventListener('change', () => {
+    onCommit(this.radiusInput, () => {
       if (this.currentIdx < 0) return;
       const r = parseFloat(this.radiusInput.value);
       if (isFinite(r) && r > 0) {
@@ -136,7 +142,7 @@ export class Sidebar {
       }
     });
 
-    this.vxInput.addEventListener('change', () => {
+    const commitVelocity = () => {
       if (this.currentIdx < 0) return;
       const vx = parseFloat(this.vxInput.value);
       const vy = parseFloat(this.vyInput.value);
@@ -145,18 +151,9 @@ export class Sidebar {
         this.callbacks.onVelocityChange(this.currentIdx, [vx, vy]);
         this._drawDial();
       }
-    });
-
-    this.vyInput.addEventListener('change', () => {
-      if (this.currentIdx < 0) return;
-      const vx = parseFloat(this.vxInput.value);
-      const vy = parseFloat(this.vyInput.value);
-      if (isFinite(vx) && isFinite(vy)) {
-        this._currentVel = [vx, vy];
-        this.callbacks.onVelocityChange(this.currentIdx, [vx, vy]);
-        this._drawDial();
-      }
-    });
+    };
+    onCommit(this.vxInput, commitVelocity);
+    onCommit(this.vyInput, commitVelocity);
 
     this.tempRange.addEventListener('input', () => {
       if (this.currentIdx < 0) return;
@@ -271,27 +268,37 @@ export class Sidebar {
     this.colorSwatch.style.backgroundColor = `rgb(${rgb})`;
   }
 
-  private _drawPreview(temp: number): void {
+  private _drawPreview(temp: number, mass?: number): void {
     const canvas = this.previewCanvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const W = canvas.width;
-    const H = canvas.height;
-    const cx = W / 2;
-    const cy = H / 2;
-    const r = 30;
+    const W = canvas.width, H = canvas.height;
+    const cx = W / 2, cy = H / 2;
 
     ctx.clearRect(0, 0, W, H);
 
     const rgb = temperatureToColor(temp);
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2.5);
-    grad.addColorStop(0, `rgba(${rgb},1)`);
-    grad.addColorStop(0.4, `rgba(${rgb},0.8)`);
-    grad.addColorStop(1, `rgba(${rgb},0)`);
+    const r   = mass ? Math.min(28, Math.max(9, Math.sqrt(mass) * 0.9)) : 22;
 
+    // Subtle corona — only just outside the solid body
+    const glow = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.7);
+    glow.addColorStop(0,   `rgba(${rgb},0.30)`);
+    glow.addColorStop(0.5, `rgba(${rgb},0.08)`);
+    glow.addColorStop(1,   `rgba(${rgb},0)`);
     ctx.beginPath();
-    ctx.arc(cx, cy, r * 2.5, 0, Math.PI * 2);
-    ctx.fillStyle = grad;
+    ctx.arc(cx, cy, r * 1.7, 0, Math.PI * 2);
+    ctx.fillStyle = glow;
+    ctx.fill();
+
+    // Solid body with limb darkening (off-centre highlight)
+    const body = ctx.createRadialGradient(cx - r * 0.28, cy - r * 0.22, 0, cx, cy, r);
+    body.addColorStop(0,    `rgba(255,255,255,0.10)`);
+    body.addColorStop(0.15, `rgba(${rgb},1)`);
+    body.addColorStop(0.75, `rgba(${rgb},0.93)`);
+    body.addColorStop(1,    `rgba(${rgb},0.45)`);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = body;
     ctx.fill();
   }
 
@@ -348,7 +355,7 @@ export class Sidebar {
     this._updateColorSwatch(state.temperature);
 
     // Preview
-    this._drawPreview(state.temperature);
+    this._drawPreview(state.temperature, mass);
 
     // Schwarzschild
     const rSch = schwarzschildRadius(mass);
