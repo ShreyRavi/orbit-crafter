@@ -3,8 +3,6 @@ import {
   TRAIL_BUFFER_LENGTH,
   worldToScreen,
   bodyRadius,
-  MAX_BODIES,
-  BODY_STRIDE,
 } from './constants';
 
 // ─── WGSL shaders ────────────────────────────────────────────────────────────
@@ -127,8 +125,6 @@ export class Renderer {
   private format: GPUTextureFormat;
   private pipeline: GPURenderPipeline;
   private uniformBuffer: GPUBuffer;
-  private storageBuffer: GPUBuffer; // max-sized placeholder; replaced each frame via bind group
-
   // 2D overlay
   private overlayCanvas: HTMLCanvasElement;
   private ctx2d: CanvasRenderingContext2D;
@@ -195,12 +191,6 @@ export class Renderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // ── Placeholder storage buffer (overwritten per frame via bind group) ───
-    this.storageBuffer = device.createBuffer({
-      size: MAX_BODIES * BODY_STRIDE,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
     // ── 2D overlay ──────────────────────────────────────────────────────────
     const ctx2d = overlayCanvas.getContext('2d');
     if (!ctx2d) throw new Error('2D context unavailable on #overlay');
@@ -254,6 +244,13 @@ export class Renderer {
       this.trailHead.length = n;
       this.trailLen.length = n;
     }
+  }
+
+  /** Remove trail data for the body at `index`, shifting remaining entries down. */
+  removeBodyTrail(index: number): void {
+    this.trails.splice(index, 1);
+    this.trailHead.splice(index, 1);
+    this.trailLen.splice(index, 1);
   }
 
   addPulse(bodyIndex: number): void {
@@ -345,7 +342,6 @@ export class Renderer {
 
   destroy(): void {
     this.uniformBuffer.destroy();
-    this.storageBuffer.destroy();
   }
 
   // ── Private drawing helpers ───────────────────────────────────────────────

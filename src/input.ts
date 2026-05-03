@@ -1,5 +1,5 @@
 import type { BodyData, Camera } from './constants';
-import { bodyRadius, screenToWorld } from './constants';
+import { DT, bodyRadius, screenToWorld } from './constants';
 import type { DragState } from './renderer';
 
 // ─── Hit testing ──────────────────────────────────────────────────────────────
@@ -170,8 +170,7 @@ export class InputHandler {
       const hist = this.dragState.mouseHistory;
       let vel: [number, number] = [0, 0];
       if (hist.length >= 2) {
-        // Average delta between consecutive positions; dt ≈ 16ms per frame
-        const dt = 0.016;
+        const dt = DT;
         let totalVx = 0;
         let totalVy = 0;
         for (let i = 1; i < hist.length; i++) {

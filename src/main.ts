@@ -65,7 +65,9 @@ async function init(): Promise<void> {
   }
 
   const device = await adapter.requestDevice();
+  let deviceLost = false;
   device.lost.then((info) => {
+    deviceLost = true;
     console.error('GPU device lost:', info.message);
     errorBanner.hidden = false;
     errorDetail.textContent = `GPU device lost: ${info.message}`;
@@ -119,8 +121,10 @@ async function init(): Promise<void> {
   input.onDeleteBody = (index: number): void => {
     if (physics.N <= 1) return;
     const bodies = physics.cpuBodies.filter((_b, i) => i !== index);
+    renderer.removeBodyTrail(index);
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
+    input.hoveredIndex = -1;
   };
 
   input.onReset = (): void => {
@@ -180,9 +184,11 @@ async function init(): Promise<void> {
     ];
     bodies[i] = { ...bi, mass: newMass, radius: bodyRadius(newMass), vel: newVel };
     bodies.splice(j, 1);
+    renderer.removeBodyTrail(j);
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
     renderer.addPulse(i);
+    input.hoveredIndex = -1;
   };
 
   // ── Animation state ───────────────────────────────────────────────────────
@@ -196,6 +202,7 @@ async function init(): Promise<void> {
 
   // ── Frame loop ────────────────────────────────────────────────────────────
   function frame(now: number): void {
+    if (deviceLost) return;
     const rawDt = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
 

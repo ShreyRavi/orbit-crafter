@@ -1,6 +1,7 @@
 import type { BodyData } from "./constants";
 import {
   G,
+  DT,
   SUBSTEP_COUNT,
   MAX_BODIES,
   BODY_STRIDE,
@@ -44,7 +45,7 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
     let r  = bodyIn[j].pos - b.pos;
     let r2 = dot(r, r) + ${SOFTENING_EPSILON * SOFTENING_EPSILON};
     let aMag = params.G * bodyIn[j].mass / r2;
-    acc += normalize(r) * aMag;
+    acc += r * (aMag / sqrt(r2));
   }
 
   b.vel += acc * params.dt;
@@ -143,6 +144,9 @@ export class PhysicsEngine {
   /** True while a mapAsync is in-flight. */
   private mapPending: boolean = false;
 
+  /** Incremented by init/setBodies; lets mapAsync callbacks detect stale reads. */
+  private generation: number = 0;
+
   // -------------------------------------------------------------------------
 
   constructor(device: GPUDevice) {
@@ -170,7 +174,7 @@ export class PhysicsEngine {
     }));
 
     // Half-step velocity back-initialisation.
-    const dtSub = (1 / SUBSTEP_COUNT) * 0.016; // nominal substep dt (DT/SUBSTEP_COUNT)
+    const dtSub = DT / SUBSTEP_COUNT;
     const halfDt = dtSub * 0.5;
     for (let i = 0; i < adjusted.length; i++) {
       const [ax, ay] = cpuAcceleration(adjusted, i);
@@ -181,6 +185,7 @@ export class PhysicsEngine {
     this.N = adjusted.length;
     this.cpuBodies = adjusted;
     this.pingIndex = 0;
+    this.generation++;
     this._uploadBothBuffers(adjusted);
   }
 
@@ -244,6 +249,7 @@ export class PhysicsEngine {
 
     this.mapPending = true;
     const n = this.N;
+    const gen = this.generation;
 
     this.stagingBuffer.mapAsync(GPUMapMode.READ, 0, byteLen).then(() => {
       const mapped = this.stagingBuffer.getMappedRange(0, byteLen);
@@ -254,6 +260,9 @@ export class PhysicsEngine {
       }
       this.stagingBuffer.unmap();
       this.mapPending = false;
+
+      // Discard if init/setBodies ran while this read was in-flight.
+      if (gen !== this.generation) return;
 
       this.cpuBodies = bodies;
       callback(bodies);
@@ -274,6 +283,7 @@ export class PhysicsEngine {
     this.N = bodies.length;
     this.cpuBodies = bodies.map((b) => ({ ...b, pos: [...b.pos] as [number, number], vel: [...b.vel] as [number, number] }));
     this.pingIndex = 0;
+    this.generation++;
     this._uploadBothBuffers(bodies);
   }
 
@@ -361,6 +371,8 @@ export class PhysicsEngine {
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < bi.radius + bj.radius) {
           this.onMerge(i, j);
+          // One merge per readback frame — indices invalidated after merge, stop.
+          return;
         }
       }
     }

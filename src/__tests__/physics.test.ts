@@ -1,6 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import {
   G,
+  DT,
+  SUBSTEP_COUNT,
   SOFTENING_EPSILON,
   PLANET_ORBIT_R,
   bodyRadius,
@@ -23,7 +25,7 @@ function totalEnergy(bodies: BodyData[]): number {
     for (let j = i + 1; j < bodies.length; j++) {
       const dx = bodies[j].pos[0] - bodies[i].pos[0];
       const dy = bodies[j].pos[1] - bodies[i].pos[1];
-      const r  = Math.sqrt(dx * dx + dy * dy + SOFTENING_EPSILON);
+      const r  = Math.sqrt(dx * dx + dy * dy + SOFTENING_EPSILON * SOFTENING_EPSILON);
       PE -= G * bodies[i].mass * bodies[j].mass / r;
     }
   }
@@ -57,8 +59,8 @@ describe('gravitationalForce', () => {
 
     const [fx, fy] = gravitationalForce(b1, b2);
 
-    // Expected force: F = G * m1 * m2 / (r2 + eps), directed from b1 to b2 (+x)
-    const r2 = 100 * 100 + SOFTENING_EPSILON;
+    // Expected force: F = G * m1 * m2 / (r2 + eps²), directed from b1 to b2 (+x)
+    const r2 = 100 * 100 + SOFTENING_EPSILON * SOFTENING_EPSILON;
     const r  = Math.sqrt(r2);
     const fMag = G * 1e6 * 1e3 / r2;
     const expectedFx = (fMag * 100) / r;
@@ -100,7 +102,7 @@ describe('Leapfrog energy conservation', () => {
     ];
 
     // Half-step backward kick to initialise staggered leapfrog
-    const dtSub = 0.016 / 4; // DT / SUBSTEP_COUNT
+    const dtSub = DT / SUBSTEP_COUNT;
     const halfDt = dtSub * 0.5;
 
     for (let i = 0; i < bodies.length; i++) {

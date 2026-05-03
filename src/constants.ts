@@ -28,7 +28,7 @@ export function gravitationalForce(
 ): [number, number] {
   const dx = b2.pos[0] - b1.pos[0];
   const dy = b2.pos[1] - b1.pos[1];
-  const r2 = dx * dx + dy * dy + SOFTENING_EPSILON;
+  const r2 = dx * dx + dy * dy + SOFTENING_EPSILON * SOFTENING_EPSILON;
   const r = Math.sqrt(r2);
   const fMag = (G * b1.mass * b2.mass) / r2;
   return [(fMag * dx) / r, (fMag * dy) / r];
