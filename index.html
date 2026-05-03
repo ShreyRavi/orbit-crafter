@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="WebGPU N-body gravity sandbox" />
+  <title>OrbitCraft — N-body gravity sandbox</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="webgpu-canvas"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="hud" aria-live="polite"></div>
+  <div id="error-banner" hidden>
+    <div class="error-content">
+      <div class="error-title">OrbitCraft requires Chrome 113+ or Edge 113+</div>
+      <div class="error-sub">WebGPU is not available in this browser</div>
+      <div class="error-code" id="error-detail"></div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

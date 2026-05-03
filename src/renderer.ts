@@ -1,0 +1,570 @@
+import type { BodyData, Camera } from './constants';
+import {
+  TRAIL_BUFFER_LENGTH,
+  worldToScreen,
+  bodyRadius,
+  MAX_BODIES,
+  BODY_STRIDE,
+} from './constants';
+
+// ─── WGSL shaders ────────────────────────────────────────────────────────────
+
+const SHADER_SRC = /* wgsl */ `
+struct Body {
+  pos: vec2f,
+  vel: vec2f,
+  mass: f32,
+  radius: f32,
+  _pad: vec2f,
+}
+
+struct RenderUniforms {
+  cameraCenter: vec2f,
+  cameraScale: f32,
+  n: u32,
+  canvasSize: vec2f,
+  _pad: vec2f,
+}
+
+@group(0) @binding(0) var<storage, read> bodies: array<Body>;
+@group(0) @binding(1) var<uniform> uniforms: RenderUniforms;
+
+struct VertOut {
+  @builtin(position) pos: vec4f,
+  @location(0) uv: vec2f,
+  @location(1) color: vec3f,
+}
+
+var<private> QUAD: array<vec2f, 6> = array<vec2f, 6>(
+  vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0,  1.0),
+  vec2f( 1.0, -1.0), vec2f(1.0,  1.0), vec2f(-1.0,  1.0),
+);
+
+fn bodyColor(mass: f32) -> vec3f {
+  if (mass > 100000.0) {
+    return vec3f(1.0, 0.961, 0.878); // star #FFF5E0
+  } else if (mass > 1000.0) {
+    return vec3f(0.753, 0.847, 1.0); // planet #C0D8FF
+  }
+  return vec3f(0.533, 0.600, 0.667); // moon #8899AA
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertOut {
+  let body = bodies[ii];
+  let center = uniforms.canvasSize * 0.5;
+  let screenPos = (body.pos - uniforms.cameraCenter) * uniforms.cameraScale + center;
+  let uv = QUAD[vi];
+  let glowR = body.radius * uniforms.cameraScale * 5.0;
+  let pixelPos = screenPos + uv * glowR;
+  let clip = vec4f(
+    pixelPos.x / uniforms.canvasSize.x * 2.0 - 1.0,
+    1.0 - pixelPos.y / uniforms.canvasSize.y * 2.0,
+    0.0, 1.0,
+  );
+  return VertOut(clip, uv, bodyColor(body.mass));
+}
+
+@fragment
+fn fs(v: VertOut) -> @location(0) vec4f {
+  let d = length(v.uv);
+  if (d > 1.0) { discard; }
+  let core = 1.0 - smoothstep(0.0, 0.18, d);
+  let glow = pow(1.0 - d, 2.5) * 0.5;
+  let a = clamp(core + glow, 0.0, 1.0);
+  return vec4f(v.color * (core + glow * 2.0), a);
+}
+`;
+
+// ─── Public types ─────────────────────────────────────────────────────────────
+
+export interface DragState {
+  active: boolean;
+  bodyIndex: number;
+  bodyWorldPos: [number, number];
+  mouseHistory: [number, number][]; // last 5 world positions
+}
+
+// ─── Internal types ───────────────────────────────────────────────────────────
+
+interface Star {
+  x: number; // normalised 0..1
+  y: number;
+  r: number;
+  a: number;
+}
+
+interface Pulse {
+  idx: number;
+  startTime: number;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function lcg(seed: number): number {
+  return (seed * 1664525 + 1013904223) & 0xffffffff;
+}
+
+/** Map mass → CSS-like colour string for trail / glow drawing on 2D canvas. */
+function trailColor(mass: number): string {
+  if (mass > 100_000) return '255,245,224';   // star  #FFF5E0
+  if (mass > 1_000)   return '192,216,255';   // planet #C0D8FF
+  return '136,153,170';                        // moon  #8899AA
+}
+
+// ─── Renderer ─────────────────────────────────────────────────────────────────
+
+export class Renderer {
+  // Public trail state (main.ts may inspect/manipulate)
+  trails: Float32Array[];
+  trailHead: number[];
+  trailLen: number[];
+
+  // WebGPU
+  private device: GPUDevice;
+  private gpuCanvas: HTMLCanvasElement;
+  private ctx: GPUCanvasContext;
+  private format: GPUTextureFormat;
+  private pipeline: GPURenderPipeline;
+  private uniformBuffer: GPUBuffer;
+  private storageBuffer: GPUBuffer; // max-sized placeholder; replaced each frame via bind group
+
+  // 2D overlay
+  private overlayCanvas: HTMLCanvasElement;
+  private ctx2d: CanvasRenderingContext2D;
+  private hudEl: HTMLElement;
+
+  // Starfield
+  private stars: Star[];
+
+  // Hint text
+  private hintStart: number | null = null;
+  private readonly HINT_FADE_DELAY = 4_000;
+  private readonly HINT_FADE_DURATION = 1_000;
+
+  // Collision pulses
+  private pulses: Pulse[] = [];
+
+  constructor(
+    device: GPUDevice,
+    gpuCanvas: HTMLCanvasElement,
+    overlayCanvas: HTMLCanvasElement,
+    hudEl: HTMLElement,
+  ) {
+    this.device = device;
+    this.gpuCanvas = gpuCanvas;
+    this.overlayCanvas = overlayCanvas;
+    this.hudEl = hudEl;
+
+    // Trails
+    this.trails = [];
+    this.trailHead = [];
+    this.trailLen = [];
+
+    // ── WebGPU context ──────────────────────────────────────────────────────
+    const gpuCtx = gpuCanvas.getContext('webgpu');
+    if (!gpuCtx) throw new Error('WebGPU context unavailable on #webgpu-canvas');
+    this.ctx = gpuCtx;
+
+    this.format = navigator.gpu.getPreferredCanvasFormat();
+    this.ctx.configure({ device, format: this.format, alphaMode: 'premultiplied' });
+
+    // ── Pipeline ────────────────────────────────────────────────────────────
+    const module = device.createShaderModule({ code: SHADER_SRC });
+
+    this.pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module, entryPoint: 'vs' },
+      fragment: {
+        module,
+        entryPoint: 'fs',
+        targets: [{
+          format: this.format,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+            alpha: { srcFactor: 'one',       dstFactor: 'one', operation: 'add' },
+          },
+        }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    // ── Uniform buffer (32 bytes) ────────────────────────────────────────────
+    this.uniformBuffer = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // ── Placeholder storage buffer (overwritten per frame via bind group) ───
+    this.storageBuffer = device.createBuffer({
+      size: MAX_BODIES * BODY_STRIDE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    // ── 2D overlay ──────────────────────────────────────────────────────────
+    const ctx2d = overlayCanvas.getContext('2d');
+    if (!ctx2d) throw new Error('2D context unavailable on #overlay');
+    this.ctx2d = ctx2d;
+
+    // ── Starfield ────────────────────────────────────────────────────────────
+    this.stars = this.generateStars(300);
+
+    // Size both canvases on creation
+    this.resize();
+  }
+
+  // ── Starfield generation ──────────────────────────────────────────────────
+
+  private generateStars(count: number): Star[] {
+    const stars: Star[] = [];
+    let seed = 0xdeadbeef;
+    for (let i = 0; i < count; i++) {
+      seed = lcg(seed);
+      const x = ((seed >>> 0) / 0x100000000);
+      seed = lcg(seed);
+      const y = ((seed >>> 0) / 0x100000000);
+      seed = lcg(seed);
+      const r = 0.3 + ((seed >>> 0) / 0x100000000) * 0.9;
+      seed = lcg(seed);
+      const a = 0.3 + ((seed >>> 0) / 0x100000000) * 0.7;
+      stars.push({ x, y, r, a });
+    }
+    return stars;
+  }
+
+  // ── Public API ────────────────────────────────────────────────────────────
+
+  resize(): void {
+    const w = this.gpuCanvas.width;
+    const h = this.gpuCanvas.height;
+    this.overlayCanvas.width = w;
+    this.overlayCanvas.height = h;
+  }
+
+  setBodyCount(n: number): void {
+    const prev = this.trails.length;
+    if (n > prev) {
+      for (let i = prev; i < n; i++) {
+        this.trails.push(new Float32Array(TRAIL_BUFFER_LENGTH * 2));
+        this.trailHead.push(0);
+        this.trailLen.push(0);
+      }
+    } else if (n < prev) {
+      this.trails.length = n;
+      this.trailHead.length = n;
+      this.trailLen.length = n;
+    }
+  }
+
+  addPulse(bodyIndex: number): void {
+    this.pulses.push({ idx: bodyIndex, startTime: performance.now() });
+  }
+
+  render(
+    bodyBuffer: GPUBuffer,
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    hoveredIndex: number,
+    dragState: DragState,
+    ghostBody: BodyData | null,
+    timeScale: number,
+    paused: boolean,
+  ): void {
+    const W = this.gpuCanvas.width;
+    const H = this.gpuCanvas.height;
+    const now = performance.now();
+
+    // ── Push trail positions ───────────────────────────────────────────────
+    for (let i = 0; i < n && i < this.trails.length; i++) {
+      const buf = this.trails[i];
+      const head = this.trailHead[i];
+      buf[head * 2]     = bodies[i].pos[0];
+      buf[head * 2 + 1] = bodies[i].pos[1];
+      this.trailHead[i] = (head + 1) % TRAIL_BUFFER_LENGTH;
+      if (this.trailLen[i] < TRAIL_BUFFER_LENGTH) this.trailLen[i]++;
+    }
+
+    // ── Update uniforms ───────────────────────────────────────────────────
+    const uniData = new ArrayBuffer(32);
+    const uniF = new Float32Array(uniData);
+    const uniU = new Uint32Array(uniData);
+    uniF[0] = camera.center[0];
+    uniF[1] = camera.center[1];
+    uniF[2] = camera.scale;
+    uniU[3] = n;
+    uniF[4] = W;
+    uniF[5] = H;
+    uniF[6] = 0;
+    uniF[7] = 0;
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, uniData);
+
+    // ── Build bind group with the live physics buffer ─────────────────────
+    const bindGroup = this.device.createBindGroup({
+      layout: this.pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: bodyBuffer } },
+        { binding: 1, resource: { buffer: this.uniformBuffer } },
+      ],
+    });
+
+    // ── WebGPU render pass ────────────────────────────────────────────────
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.ctx.getCurrentTexture().createView(),
+        loadOp: 'clear',
+        clearValue: { r: 0.02, g: 0.039, b: 0.078, a: 1 },
+        storeOp: 'store',
+      }],
+    });
+    pass.setPipeline(this.pipeline);
+    pass.setBindGroup(0, bindGroup);
+    if (n > 0) pass.draw(6, n);
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+
+    // ── Canvas 2D overlay ─────────────────────────────────────────────────
+    const c = this.ctx2d;
+    c.clearRect(0, 0, W, H);
+
+    this.drawStarfield(W, H);
+    this.drawTrails(bodies, n, camera, W, H);
+    this.drawCollisionPulses(bodies, n, camera, W, H, now);
+    this.drawHoverRing(bodies, n, camera, W, H, hoveredIndex);
+    this.drawDragVector(dragState, camera, W, H);
+    this.drawGhostBody(ghostBody, camera, W, H);
+    this.drawHintText(W, H, now);
+
+    // ── HUD ───────────────────────────────────────────────────────────────
+    this.hudEl.innerHTML =
+      `<span class="label">N </span>${n}<br>` +
+      `<span class="label">× </span>${timeScale.toFixed(1)}` +
+      (paused ? '<br><span class="label">PAUSED</span>' : '');
+  }
+
+  destroy(): void {
+    this.uniformBuffer.destroy();
+    this.storageBuffer.destroy();
+  }
+
+  // ── Private drawing helpers ───────────────────────────────────────────────
+
+  private drawStarfield(W: number, H: number): void {
+    const c = this.ctx2d;
+    for (const s of this.stars) {
+      c.beginPath();
+      c.arc(s.x * W, s.y * H, s.r, 0, Math.PI * 2);
+      c.fillStyle = `rgba(255,255,255,${s.a})`;
+      c.fill();
+    }
+  }
+
+  private drawTrails(
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    const c = this.ctx2d;
+    for (let i = 0; i < n && i < this.trails.length; i++) {
+      const len = this.trailLen[i];
+      if (len < 2) continue;
+
+      const buf   = this.trails[i];
+      const head  = this.trailHead[i];
+      const color = trailColor(bodies[i].mass);
+
+      c.beginPath();
+      let first = true;
+      for (let j = 0; j < len; j++) {
+        // oldest point first: (head - len + j + TRAIL_BUFFER_LENGTH) % TRAIL_BUFFER_LENGTH
+        const idx = (head - len + j + TRAIL_BUFFER_LENGTH) % TRAIL_BUFFER_LENGTH;
+        const wx = buf[idx * 2];
+        const wy = buf[idx * 2 + 1];
+        const [sx, sy] = worldToScreen([wx, wy], camera, W, H);
+        const alpha = (j / (len - 1)) * 0.35;
+        if (first) {
+          c.moveTo(sx, sy);
+          first = false;
+        } else {
+          // Draw segment by segment so we can vary alpha
+          c.strokeStyle = `rgba(${color},${alpha.toFixed(3)})`;
+          c.lineWidth = 1;
+          c.lineTo(sx, sy);
+          c.stroke();
+          c.beginPath();
+          c.moveTo(sx, sy);
+        }
+      }
+    }
+  }
+
+  private drawCollisionPulses(
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+    now: number,
+  ): void {
+    const c = this.ctx2d;
+    this.pulses = this.pulses.filter(pulse => {
+      const progress = (now - pulse.startTime) / 500;
+      if (progress >= 1) return false;
+      const bi = pulse.idx;
+      if (bi >= n || bi >= bodies.length) return false;
+
+      const body = bodies[bi];
+      const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+      const r = bodyRadius(body.mass) * camera.scale * (1 + progress * 3);
+      const alpha = 1 - progress;
+
+      c.beginPath();
+      c.arc(sx, sy, r, 0, Math.PI * 2);
+      c.strokeStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+      c.lineWidth = 1.5;
+      c.stroke();
+      return true;
+    });
+  }
+
+  private drawHoverRing(
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+    hoveredIndex: number,
+  ): void {
+    if (hoveredIndex < 0 || hoveredIndex >= n) return;
+    const body = bodies[hoveredIndex];
+    const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+    const r = bodyRadius(body.mass) * camera.scale * 1.4;
+    const c = this.ctx2d;
+    c.beginPath();
+    c.arc(sx, sy, r, 0, Math.PI * 2);
+    c.strokeStyle = 'rgba(255,255,255,0.6)';
+    c.lineWidth = 1;
+    c.stroke();
+  }
+
+  private drawDragVector(
+    dragState: DragState,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    if (!dragState.active) return;
+    const hist = dragState.mouseHistory;
+    if (hist.length < 2) return;
+
+    // Velocity vector from history: diff between oldest and newest
+    const oldest = hist[0];
+    const newest  = hist[hist.length - 1];
+    let vx = (newest[0] - oldest[0]) * 20;
+    let vy = (newest[1] - oldest[1]) * 20;
+
+    // Clamp to 200px
+    const vLen = Math.sqrt(vx * vx + vy * vy);
+    if (vLen > 200) { vx = (vx / vLen) * 200; vy = (vy / vLen) * 200; }
+    if (vLen < 1) return;
+
+    const [sx, sy] = worldToScreen(dragState.bodyWorldPos, camera, W, H);
+    const ex = sx + vx;
+    const ey = sy + vy;
+
+    const c = this.ctx2d;
+    c.save();
+    c.setLineDash([5, 4]);
+    c.strokeStyle = 'rgba(255,255,255,0.7)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(sx, sy);
+    c.lineTo(ex, ey);
+    c.stroke();
+
+    // Arrowhead
+    c.setLineDash([]);
+    const angle = Math.atan2(ey - sy, ex - sx);
+    const headLen = 8;
+    c.beginPath();
+    c.moveTo(ex, ey);
+    c.lineTo(
+      ex - headLen * Math.cos(angle - Math.PI / 6),
+      ey - headLen * Math.sin(angle - Math.PI / 6),
+    );
+    c.moveTo(ex, ey);
+    c.lineTo(
+      ex - headLen * Math.cos(angle + Math.PI / 6),
+      ey - headLen * Math.sin(angle + Math.PI / 6),
+    );
+    c.stroke();
+    c.restore();
+  }
+
+  private drawGhostBody(
+    ghostBody: BodyData | null,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    if (!ghostBody) return;
+    const [sx, sy] = worldToScreen(ghostBody.pos, camera, W, H);
+    const r   = bodyRadius(ghostBody.mass) * camera.scale;
+    const glowR = r * 5;
+    const c = this.ctx2d;
+
+    c.save();
+    c.globalAlpha = 0.4;
+
+    // Glow gradient approximation
+    const grad = c.createRadialGradient(sx, sy, 0, sx, sy, glowR);
+    const color = trailColor(ghostBody.mass);
+    grad.addColorStop(0,   `rgba(${color},1)`);
+    grad.addColorStop(0.18,`rgba(${color},1)`);
+    grad.addColorStop(1,   `rgba(${color},0)`);
+    c.beginPath();
+    c.arc(sx, sy, glowR, 0, Math.PI * 2);
+    c.fillStyle = grad;
+    c.fill();
+
+    // Dashed outline at actual radius
+    c.setLineDash([4, 4]);
+    c.strokeStyle = `rgba(${color},0.8)`;
+    c.lineWidth = 1;
+    c.beginPath();
+    c.arc(sx, sy, r, 0, Math.PI * 2);
+    c.stroke();
+
+    c.restore();
+  }
+
+  private drawHintText(W: number, H: number, now: number): void {
+    if (this.hintStart === null) this.hintStart = now;
+
+    const elapsed = now - this.hintStart;
+    const totalDuration = this.HINT_FADE_DELAY + this.HINT_FADE_DURATION;
+    if (elapsed >= totalDuration) return;
+
+    let alpha = 0.7;
+    if (elapsed > this.HINT_FADE_DELAY) {
+      const fadeProgress = (elapsed - this.HINT_FADE_DELAY) / this.HINT_FADE_DURATION;
+      alpha = 0.7 * (1 - fadeProgress);
+    }
+
+    const c = this.ctx2d;
+    c.save();
+    c.font = "13px 'Geist Mono', monospace";
+    c.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+    c.textAlign = 'center';
+    c.textBaseline = 'bottom';
+    c.fillText(
+      'drag · click to add · scroll mass · Delete removes · Space pause · R reset',
+      W / 2,
+      H - 16,
+    );
+    c.restore();
+  }
+}
