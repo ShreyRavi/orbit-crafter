@@ -6,6 +6,7 @@ import {
   SOFTENING_EPSILON,
   PLANET_ORBIT_R,
   bodyRadius,
+  collisionRadius,
   circularOrbitVelocity,
   gravitationalForce,
   screenToWorld,
@@ -13,6 +14,7 @@ import {
   type BodyData,
   type Camera,
 } from '../constants';
+import { defaultColor, temperatureToColor } from '../bodyState';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -174,22 +176,99 @@ describe('Camera coordinate round-trip', () => {
   });
 });
 
+// bodyRadius formula: max(1, min(5, log10(max(mass,1))*1.2-1))
+// Used only for GPU tidal radius — visual/collision use collisionRadius()
 describe('bodyRadius', () => {
-  test('clamps to minimum of 2 for mass=0', () => {
-    expect(bodyRadius(0)).toBe(2);
+  test('clamps to minimum of 1 for mass=0', () => {
+    // log10(1)*1.2-1 = -1 → clamped to min 1
+    expect(bodyRadius(0)).toBe(1);
   });
 
-  test('clamps to maximum of 80 for very large mass', () => {
-    expect(bodyRadius(1e10)).toBe(80);
+  test('clamps to maximum of 5 for very large mass', () => {
+    // log10(1e10)*1.2-1 = 11 → clamped to max 5
+    expect(bodyRadius(1e10)).toBe(5);
   });
 
-  test('mass=4 → sqrt(4)*0.5 = 1, clamped to 2', () => {
-    // sqrt(4) * 0.5 = 1.0, which is below min of 2
-    expect(bodyRadius(4)).toBe(2);
+  test('mass=100 → log10(100)*1.2-1 = 1.4', () => {
+    expect(bodyRadius(100)).toBeCloseTo(1.4, 8);
   });
 
-  test('mass=100 → sqrt(100)*0.5 = 5, within range', () => {
-    expect(bodyRadius(100)).toBeCloseTo(5, 8);
+  test('range is always [1, 5]', () => {
+    for (const mass of [0, 1, 10, 1e3, 1e6, 1e9]) {
+      const r = bodyRadius(mass);
+      expect(r).toBeGreaterThanOrEqual(1);
+      expect(r).toBeLessThanOrEqual(5);
+    }
+  });
+});
+
+// collisionRadius formula: max(4, (log10(mass)-1)*5+2)
+describe('collisionRadius', () => {
+  test('clamps to minimum of 4', () => {
+    expect(collisionRadius(1)).toBeGreaterThanOrEqual(4);
+    expect(collisionRadius(0)).toBeGreaterThanOrEqual(4);
+  });
+
+  test('mass=1e6 (star): returns positive value > 4', () => {
+    // log10(1e6)=6, (6-1)*5+2=27
+    expect(collisionRadius(1e6)).toBeCloseTo(27, 5);
+  });
+
+  test('always larger than bodyRadius for same mass', () => {
+    for (const mass of [1, 1e3, 1e6]) {
+      expect(collisionRadius(mass)).toBeGreaterThanOrEqual(bodyRadius(mass));
+    }
+  });
+});
+
+describe('defaultColor', () => {
+  // Regression: defaultColor now returns [r,g,b] array (was 'r,g,b' string)
+  // Regression: ISSUE — color type changed from string to [number,number,number]
+  // Found by /qa on 2026-05-03
+  // Report: .gstack/qa-reports/qa-report-localhost-2026-05-03.md
+  test('returns [number,number,number] tuple', () => {
+    const c = defaultColor(1e6);
+    expect(Array.isArray(c)).toBe(true);
+    expect(c).toHaveLength(3);
+    expect(c.every(v => typeof v === 'number' && v >= 0 && v <= 255)).toBe(true);
+  });
+
+  test('star mass → warm white [255,248,220]', () => {
+    expect(defaultColor(2e6)).toEqual([255, 248, 220]);
+  });
+
+  test('moon mass → neutral grey', () => {
+    expect(defaultColor(10)).toEqual([160, 162, 165]);
+  });
+});
+
+describe('temperatureToColor', () => {
+  // Regression: temperatureToColor now returns [r,g,b] array (was string)
+  // Regression: ISSUE — color type changed from string to [number,number,number]
+  // Found by /qa on 2026-05-03
+  // Report: .gstack/qa-reports/qa-report-localhost-2026-05-03.md
+  test('returns [number,number,number] tuple', () => {
+    const c = temperatureToColor(5800);
+    expect(Array.isArray(c)).toBe(true);
+    expect(c).toHaveLength(3);
+    expect(c.every(v => typeof v === 'number' && Number.isFinite(v))).toBe(true);
+  });
+
+  test('all values in [0, 255]', () => {
+    for (const T of [1000, 2000, 5800, 10000, 40000]) {
+      const [r, g, b] = temperatureToColor(T);
+      expect(r).toBeGreaterThanOrEqual(0); expect(r).toBeLessThanOrEqual(255);
+      expect(g).toBeGreaterThanOrEqual(0); expect(g).toBeLessThanOrEqual(255);
+      expect(b).toBeGreaterThanOrEqual(0); expect(b).toBeLessThanOrEqual(255);
+    }
+  });
+
+  test('clamps temp below 1000 to 1000', () => {
+    expect(temperatureToColor(0)).toEqual(temperatureToColor(1000));
+  });
+
+  test('clamps temp above 40000 to 40000', () => {
+    expect(temperatureToColor(99999)).toEqual(temperatureToColor(40000));
   });
 });
 
