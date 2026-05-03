@@ -11,10 +11,21 @@ import {
   MAX_BODIES,
   bodyRadius,
   circularOrbitVelocity,
+  ORBIT_PREDICT_INTERVAL,
 } from './constants';
 import { PhysicsEngine } from './physicsEngine';
 import { Renderer } from './renderer';
 import { InputHandler } from './input';
+import type { BodyState } from './bodyState';
+import {
+  generateName,
+  defaultTemperature,
+} from './bodyState';
+import type { FeatureFlags } from './toolbar';
+import { Toolbar } from './toolbar';
+import { Sidebar } from './sidebar';
+import { computeLagrangePoints } from './lagrange';
+import { predictOrbit } from './orbitPredictor';
 
 // ─── Initial bodies ────────────────────────────────────────────────────────────
 
@@ -43,6 +54,14 @@ function makeInitialBodies(): BodyData[] {
   };
 
   return [star, planet, moon];
+}
+
+function makeInitialBodyStates(): BodyState[] {
+  return [
+    { name: 'Sol',   temperature: 5800, manualRadius: false },
+    { name: 'Earth', temperature: 300,  manualRadius: false },
+    { name: 'Luna',  temperature: 100,  manualRadius: false },
+  ];
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -94,6 +113,22 @@ async function init(): Promise<void> {
   // ── Camera ────────────────────────────────────────────────────────────────
   const camera: Camera = { center: [0, 0], scale: 1.0 };
 
+  // ── State ─────────────────────────────────────────────────────────────────
+  let bodyStates: BodyState[] = makeInitialBodyStates();
+  let featureFlags: FeatureFlags = {
+    trails: true,
+    velocityArrows: true,
+    orbitPaths: true,
+    labels: true,
+    lagrangePoints: true,
+    lagrangeCount: 5,
+    gasExchange: true,
+  };
+  let selectedBodyIndex: number = -1;
+  let lagrangePoints: [number, number][] | null = null;
+  let orbitPaths: [number, number][][] = [];
+  let orbitUpdateCounter: number = 0;
+
   // ── Subsystems ────────────────────────────────────────────────────────────
   const physics = new PhysicsEngine(device);
   const initialBodies = makeInitialBodies();
@@ -108,13 +143,167 @@ async function init(): Promise<void> {
     () => physics.cpuBodies,
   );
 
+  // ── Toolbar & Sidebar ─────────────────────────────────────────────────────
+  const toolbarEl = document.getElementById('toolbar')!;
+  const sidebarEl = document.getElementById('sidebar')!;
+
+  const toolbar = new Toolbar(toolbarEl);
+  toolbar.onChange = (flags: FeatureFlags) => {
+    featureFlags = flags;
+  };
+
+  const sidebar = new Sidebar(sidebarEl, {
+    onNameChange: (idx, name) => {
+      if (idx < bodyStates.length) {
+        bodyStates[idx] = { ...bodyStates[idx], name };
+      }
+    },
+    onMassChange: (idx, mass) => {
+      const bodies = physics.cpuBodies.slice();
+      if (idx < bodies.length) {
+        const newRadius = bodyStates[idx]?.manualRadius
+          ? bodies[idx].radius
+          : bodyRadius(mass);
+        bodies[idx] = { ...bodies[idx], mass, radius: newRadius };
+        physics.setBodies(bodies);
+        if (idx < bodyStates.length && !bodyStates[idx].manualRadius) {
+          bodyStates[idx] = { ...bodyStates[idx] };
+        }
+        sidebar.updateBody(bodies[idx], bodyStates[idx]);
+      }
+    },
+    onRadiusChange: (idx, radius, manual) => {
+      const bodies = physics.cpuBodies.slice();
+      if (idx < bodies.length) {
+        bodies[idx] = { ...bodies[idx], radius };
+        physics.setBodies(bodies);
+        if (idx < bodyStates.length) {
+          bodyStates[idx] = { ...bodyStates[idx], manualRadius: manual };
+        }
+        sidebar.updateBody(bodies[idx], bodyStates[idx]);
+      }
+    },
+    onVelocityChange: (idx, vel) => {
+      const bodies = physics.cpuBodies.slice();
+      if (idx < bodies.length) {
+        bodies[idx] = { ...bodies[idx], vel };
+        physics.setBodies(bodies);
+      }
+    },
+    onTempChange: (idx, temp) => {
+      if (idx < bodyStates.length) {
+        bodyStates[idx] = { ...bodyStates[idx], temperature: temp };
+      }
+    },
+    onClose: () => {
+      sidebar.close();
+      selectedBodyIndex = -1;
+      input.selectedBodyIndex = -1;
+      lagrangePoints = null;
+    },
+    onStartVelocityDrag: () => {
+      input.velocityDragMode = true;
+    },
+  });
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function recomputeLagrange(): void {
+    const bodies = physics.cpuBodies;
+    if (bodies.length < 2) {
+      lagrangePoints = null;
+      return;
+    }
+
+    let m1Idx = 0;
+    let m2Idx = 1;
+
+    if (selectedBodyIndex >= 0 && selectedBodyIndex < bodies.length) {
+      // Use selected body + most massive other
+      const selIdx = selectedBodyIndex;
+      let bestOther = -1;
+      let bestMass = -1;
+      for (let i = 0; i < bodies.length; i++) {
+        if (i === selIdx) continue;
+        if (bodies[i].mass > bestMass) {
+          bestMass = bodies[i].mass;
+          bestOther = i;
+        }
+      }
+      if (bestOther >= 0) {
+        m1Idx = selIdx;
+        m2Idx = bestOther;
+        // Ensure m1 is more massive (Lagrange convention)
+        if (bodies[m2Idx].mass > bodies[m1Idx].mass) {
+          [m1Idx, m2Idx] = [m2Idx, m1Idx];
+        }
+      }
+    } else {
+      // Use two most massive bodies
+      let best = [0, 1];
+      if (bodies.length > 1 && bodies[1].mass > bodies[0].mass) {
+        best = [1, 0];
+      }
+      for (let i = 2; i < bodies.length; i++) {
+        if (bodies[i].mass > bodies[best[0]].mass) {
+          best = [i, best[0]];
+        } else if (bodies[i].mass > bodies[best[1]].mass) {
+          best[1] = i;
+        }
+      }
+      m1Idx = best[0];
+      m2Idx = best[1];
+    }
+
+    const pts = computeLagrangePoints(bodies[m1Idx], bodies[m2Idx]);
+    lagrangePoints = pts as [number, number][];
+  }
+
+  function recomputeOrbitPaths(): void {
+    const bodies = physics.cpuBodies;
+    const paths: [number, number][][] = [];
+    for (let i = 0; i < bodies.length; i++) {
+      paths.push(predictOrbit(i, bodies));
+    }
+    orbitPaths = paths;
+  }
+
   // ── Callbacks ─────────────────────────────────────────────────────────────
+
+  input.onSelectBody = (index: number): void => {
+    selectedBodyIndex = index;
+    input.selectedBodyIndex = index;
+    const bodies = physics.cpuBodies;
+    if (index >= 0 && index < bodies.length && index < bodyStates.length) {
+      sidebar.open(index, bodies[index], bodyStates[index]);
+    }
+    recomputeLagrange();
+  };
+
+  input.onVelocityDrag = (index: number, vel: [number, number]): void => {
+    const bodies = physics.cpuBodies.slice();
+    if (index < bodies.length) {
+      bodies[index] = { ...bodies[index], vel };
+      physics.setBodies(bodies);
+      if (sidebar.isOpen && index === selectedBodyIndex) {
+        sidebar.updateBody(bodies[index], bodyStates[index]);
+      }
+    }
+  };
 
   input.onAddBody = (body: BodyData): void => {
     if (physics.N >= MAX_BODIES) return;
     const bodies = [...physics.cpuBodies, body];
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
+    // Create state for new body
+    const newState: BodyState = {
+      name: generateName(body.mass, bodyStates),
+      temperature: defaultTemperature(body.mass),
+      manualRadius: false,
+    };
+    bodyStates.push(newState);
+    recomputeOrbitPaths();
   };
 
   input.onDeleteBody = (index: number): void => {
@@ -123,14 +312,31 @@ async function init(): Promise<void> {
     renderer.removeBodyTrail(index);
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
+    bodyStates.splice(index, 1);
     input.hoveredIndex = -1;
+    if (selectedBodyIndex === index) {
+      selectedBodyIndex = -1;
+      input.selectedBodyIndex = -1;
+      sidebar.close();
+      lagrangePoints = null;
+    } else if (selectedBodyIndex > index) {
+      selectedBodyIndex--;
+      input.selectedBodyIndex = selectedBodyIndex;
+    }
+    recomputeOrbitPaths();
   };
 
   input.onReset = (): void => {
     const bodies = makeInitialBodies();
     physics.init(bodies);
     renderer.setBodyCount(bodies.length);
+    bodyStates = makeInitialBodyStates();
     timeScale = 1.0;
+    selectedBodyIndex = -1;
+    input.selectedBodyIndex = -1;
+    sidebar.close();
+    lagrangePoints = null;
+    orbitPaths = [];
   };
 
   input.onPauseToggle = (): void => {
@@ -188,6 +394,34 @@ async function init(): Promise<void> {
     renderer.setBodyCount(bodies.length);
     renderer.addPulse(i);
     input.hoveredIndex = -1;
+
+    // Merge body states
+    if (i < bodyStates.length && j < bodyStates.length) {
+      const stateI = bodyStates[i];
+      const stateJ = bodyStates[j];
+      // Keep surviving body's name if it was a larger body
+      const survivingName = bi.mass >= bj.mass ? stateI.name : stateJ.name;
+      // Use auto-generated name if mass category changed significantly
+      const newState: BodyState = {
+        name: survivingName,
+        temperature: defaultTemperature(newMass),
+        manualRadius: false,
+      };
+      bodyStates[i] = newState;
+      bodyStates.splice(j, 1);
+    }
+
+    // Adjust selected index
+    if (selectedBodyIndex === j) {
+      selectedBodyIndex = i;
+      input.selectedBodyIndex = i;
+      sidebar.close();
+    } else if (selectedBodyIndex > j) {
+      selectedBodyIndex--;
+      input.selectedBodyIndex = selectedBodyIndex;
+    }
+
+    recomputeLagrange();
   };
 
   // ── Animation state ───────────────────────────────────────────────────────
@@ -195,6 +429,10 @@ async function init(): Promise<void> {
   let timeScale = 1.0;
   let lastTime  = 0;
   let stepOnce  = false;
+
+  // Initial computations
+  recomputeLagrange();
+  recomputeOrbitPaths();
 
   // Prime the pump: run a dt=0 tick so we have a valid buffer before the first frame.
   let lastBodyBuffer: GPUBuffer = physics.tick(0);
@@ -222,7 +460,19 @@ async function init(): Promise<void> {
       physics.scheduleCpuRead((_bodies: BodyData[]) => {
         // cpuBodies is updated inside scheduleCpuRead; collision checks are
         // handled by PhysicsEngine itself (calls onMerge as needed).
+
+        // Update sidebar if open
+        if (sidebar.isOpen && selectedBodyIndex >= 0 && selectedBodyIndex < physics.cpuBodies.length) {
+          sidebar.updateBody(physics.cpuBodies[selectedBodyIndex], bodyStates[selectedBodyIndex]);
+        }
       });
+
+      // Periodic orbit path recalculation
+      orbitUpdateCounter++;
+      if (orbitUpdateCounter >= ORBIT_PREDICT_INTERVAL) {
+        orbitUpdateCounter = 0;
+        recomputeOrbitPaths();
+      }
 
       stepOnce = false;
     }
@@ -237,6 +487,11 @@ async function init(): Promise<void> {
       input.ghostBody,
       timeScale,
       paused,
+      bodyStates,
+      featureFlags,
+      selectedBodyIndex,
+      lagrangePoints,
+      orbitPaths,
     );
 
     requestAnimationFrame(frame);

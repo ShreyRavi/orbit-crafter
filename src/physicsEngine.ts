@@ -6,6 +6,7 @@ import {
   MAX_BODIES,
   BODY_STRIDE,
   SOFTENING_EPSILON,
+  COLLISION_OVERLAP,
 } from "./constants";
 
 // ---------------------------------------------------------------------------
@@ -44,8 +45,12 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
     if (j == i) { continue; }
     let r  = bodyIn[j].pos - b.pos;
     let r2 = dot(r, r) + ${SOFTENING_EPSILON * SOFTENING_EPSILON};
+    let dist_sq = dot(r, r);
+    let dist = sqrt(dist_sq);
     let aMag = params.G * bodyIn[j].mass / r2;
-    acc += r * (aMag / sqrt(r2));
+    let closeThresh = (b.radius + bodyIn[j].radius) * 3.0;
+    let tidalFactor = select(1.0, 1.0 + 0.3 * (1.0 - dist / max(closeThresh, 0.001)), dist < closeThresh);
+    acc += r * ((aMag / sqrt(r2)) * tidalFactor);
   }
 
   b.vel += acc * params.dt;
@@ -369,7 +374,7 @@ export class PhysicsEngine {
         const dx   = bj.pos[0] - bi.pos[0];
         const dy   = bj.pos[1] - bi.pos[1];
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < bi.radius + bj.radius) {
+        if (dist < (bi.radius + bj.radius) * COLLISION_OVERLAP) {
           this.onMerge(i, j);
           // One merge per readback frame — indices invalidated after merge, stop.
           return;

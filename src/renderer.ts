@@ -4,6 +4,9 @@ import {
   worldToScreen,
   bodyRadius,
 } from './constants';
+import type { BodyState } from './bodyState';
+import { isBlackHole } from './bodyState';
+import type { FeatureFlags } from './toolbar';
 
 // ─── WGSL shaders ────────────────────────────────────────────────────────────
 
@@ -97,6 +100,15 @@ interface Pulse {
   startTime: number;
 }
 
+interface GasParticle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function lcg(seed: number): number {
@@ -135,6 +147,12 @@ export class Renderer {
 
   // Collision pulses
   private pulses: Pulse[] = [];
+
+  // Gas particle system
+  private _gasParticles: GasParticle[] = [];
+
+  // Random seed for gas particles
+  private _gasRng: number = 0xaabbccdd;
 
   // Reusable uniform buffer staging data (both views share the same backing buffer)
   private _uniBuffer = new ArrayBuffer(32);
@@ -270,19 +288,26 @@ export class Renderer {
     ghostBody: BodyData | null,
     timeScale: number,
     paused: boolean,
+    bodyStates: BodyState[],
+    featureFlags: FeatureFlags,
+    selectedBodyIndex: number,
+    lagrangePoints: [number, number][] | null,
+    orbitPaths: [number, number][][],
   ): void {
     const W = this.gpuCanvas.width;
     const H = this.gpuCanvas.height;
     const now = performance.now();
 
     // ── Push trail positions ───────────────────────────────────────────────
-    for (let i = 0; i < n && i < this.trails.length; i++) {
-      const buf = this.trails[i];
-      const head = this.trailHead[i];
-      buf[head * 2]     = bodies[i].pos[0];
-      buf[head * 2 + 1] = bodies[i].pos[1];
-      this.trailHead[i] = (head + 1) % TRAIL_BUFFER_LENGTH;
-      if (this.trailLen[i] < TRAIL_BUFFER_LENGTH) this.trailLen[i]++;
+    if (featureFlags.trails) {
+      for (let i = 0; i < n && i < this.trails.length; i++) {
+        const buf = this.trails[i];
+        const head = this.trailHead[i];
+        buf[head * 2]     = bodies[i].pos[0];
+        buf[head * 2 + 1] = bodies[i].pos[1];
+        this.trailHead[i] = (head + 1) % TRAIL_BUFFER_LENGTH;
+        if (this.trailLen[i] < TRAIL_BUFFER_LENGTH) this.trailLen[i]++;
+      }
     }
 
     // ── Update uniforms ───────────────────────────────────────────────────
@@ -330,12 +355,37 @@ export class Renderer {
     c.clearRect(0, 0, W, H);
 
     this.drawStarfield(W, H);
-    this.drawTrails(bodies, n, camera, W, H);
-    this.drawVelocityArrows(bodies, n, camera, W, H, dragState);
+
+    if (featureFlags.orbitPaths) {
+      this.drawOrbitPaths(orbitPaths, camera, W, H, bodies, n);
+    }
+
+    if (featureFlags.trails) {
+      this.drawTrails(bodies, n, camera, W, H);
+    }
+
+    if (featureFlags.velocityArrows) {
+      this.drawVelocityArrows(bodies, n, camera, W, H, dragState, selectedBodyIndex);
+    }
+
     this.drawCollisionPulses(bodies, n, camera, W, H, now);
     this.drawHoverRing(bodies, n, camera, W, H, hoveredIndex);
     this.drawDragVector(dragState, camera, W, H);
     this.drawGhostBody(ghostBody, camera, W, H);
+
+    if (featureFlags.gasExchange) {
+      this.drawGasExchange(bodies, n, camera, W, H);
+    }
+
+    if (featureFlags.labels) {
+      this.drawLabels(bodies, bodyStates, n, camera, W, H, selectedBodyIndex);
+    }
+
+    if (featureFlags.lagrangePoints && lagrangePoints !== null) {
+      this.drawLagrangePoints(lagrangePoints, featureFlags.lagrangeCount, camera, W, H);
+    }
+
+    this.drawBlackHoles(bodies, bodyStates, n, camera, W, H);
 
     // ── HUD ───────────────────────────────────────────────────────────────
     this.hudEl.innerHTML =
@@ -548,6 +598,7 @@ export class Renderer {
     W: number,
     H: number,
     dragState: DragState,
+    selectedBodyIndex: number,
   ): void {
     const c = this.ctx2d;
     const VEL_SCALE = 1;
@@ -557,6 +608,7 @@ export class Renderer {
 
     for (let i = 0; i < n && i < bodies.length; i++) {
       if (dragState.active && dragState.bodyIndex === i) continue;
+      if (selectedBodyIndex === i) continue;
       const body = bodies[i];
       const [vx, vy] = body.vel;
       const speed = Math.sqrt(vx * vx + vy * vy);
@@ -590,6 +642,223 @@ export class Renderer {
       c.stroke();
 
       c.restore();
+    }
+  }
+
+  private drawOrbitPaths(
+    paths: [number, number][][],
+    camera: Camera,
+    W: number,
+    H: number,
+    bodies: BodyData[],
+    n: number,
+  ): void {
+    const c = this.ctx2d;
+    for (let i = 0; i < paths.length && i < n; i++) {
+      const path = paths[i];
+      if (path.length < 2) continue;
+      const color = trailColor(bodies[i]?.mass ?? 1);
+
+      c.save();
+      c.setLineDash([4, 6]);
+      c.strokeStyle = `rgba(${color},0.30)`;
+      c.lineWidth = 1;
+      c.beginPath();
+      for (let j = 0; j < path.length; j++) {
+        const [wx, wy] = path[j];
+        const [sx, sy] = worldToScreen([wx, wy], camera, W, H);
+        if (j === 0) {
+          c.moveTo(sx, sy);
+        } else {
+          c.lineTo(sx, sy);
+        }
+      }
+      c.stroke();
+      c.restore();
+    }
+  }
+
+  private drawLabels(
+    bodies: BodyData[],
+    states: BodyState[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+    selectedIdx: number,
+  ): void {
+    const c = this.ctx2d;
+    c.font = `11px 'Geist Mono', monospace`;
+    c.textAlign = 'center';
+    c.textBaseline = 'bottom';
+
+    for (let i = 0; i < n && i < bodies.length; i++) {
+      const body = bodies[i];
+      const state = states[i];
+      if (!state) continue;
+      const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+      const r = bodyRadius(body.mass) * camera.scale;
+      const labelY = sy - r - 6;
+
+      const isSelected = i === selectedIdx;
+      c.fillStyle = isSelected ? 'rgba(120,200,255,0.90)' : 'rgba(255,255,255,0.55)';
+      c.fillText(state.name, sx, labelY);
+    }
+  }
+
+  private drawLagrangePoints(
+    points: [number, number][],
+    count: 0 | 2 | 5,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    if (count === 0) return;
+    const c = this.ctx2d;
+    const labels = ['L1', 'L2', 'L3', 'L4', 'L5'];
+    // count=2 means only L4 and L5 (indices 3,4)
+    // count=5 means all
+    const startIdx = count === 2 ? 3 : 0;
+
+    c.save();
+    c.font = `10px 'Geist Mono', monospace`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+
+    for (let i = startIdx; i < points.length && i < 5; i++) {
+      const pt = points[i];
+      const [sx, sy] = worldToScreen(pt, camera, W, H);
+      const s = 5;
+      c.strokeStyle = 'rgba(100,220,150,0.60)';
+      c.lineWidth = 1.5;
+      c.beginPath();
+      c.moveTo(sx - s, sy - s);
+      c.lineTo(sx + s, sy + s);
+      c.moveTo(sx + s, sy - s);
+      c.lineTo(sx - s, sy + s);
+      c.stroke();
+
+      c.fillStyle = 'rgba(100,220,150,0.75)';
+      c.fillText(labels[i], sx, sy - 10);
+    }
+    c.restore();
+  }
+
+  private _gasRng_next(): number {
+    this._gasRng = lcg(this._gasRng);
+    return (this._gasRng >>> 0) / 0x100000000;
+  }
+
+  private drawGasExchange(
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    const c = this.ctx2d;
+    const MAX_PARTICLES = 200;
+    const CLOSE_DIST = 120; // world units
+
+    // Update existing particles
+    for (const p of this._gasParticles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life += 0.02;
+    }
+
+    // Remove dead particles
+    this._gasParticles = this._gasParticles.filter(p => p.life < 1);
+
+    // Spawn new particles for close pairs
+    if (this._gasParticles.length < MAX_PARTICLES) {
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const bi = bodies[i];
+          const bj = bodies[j];
+          const dx = bj.pos[0] - bi.pos[0];
+          const dy = bj.pos[1] - bi.pos[1];
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < CLOSE_DIST && this._gasParticles.length < MAX_PARTICLES) {
+            // Spawn up to 2 particles per pair per frame
+            for (let k = 0; k < 2 && this._gasParticles.length < MAX_PARTICLES; k++) {
+              // Spawn at source body
+              const fromI = this._gasRng_next() < 0.5;
+              const src = fromI ? bi : bj;
+              const tgt = fromI ? bj : bi;
+              const txd = tgt.pos[0] - src.pos[0];
+              const tyd = tgt.pos[1] - src.pos[1];
+              const tlen = Math.sqrt(txd * txd + tyd * tyd) || 1;
+              const speed = 0.4 + this._gasRng_next() * 0.6;
+              const randAngle = (this._gasRng_next() - 0.5) * 0.8;
+              const cos = Math.cos(randAngle);
+              const sin = Math.sin(randAngle);
+              const bvx = txd / tlen;
+              const bvy = tyd / tlen;
+              const vx = (bvx * cos - bvy * sin) * speed;
+              const vy = (bvx * sin + bvy * cos) * speed;
+              const color = trailColor(src.mass);
+              this._gasParticles.push({
+                x: src.pos[0] + (this._gasRng_next() - 0.5) * src.radius * 2,
+                y: src.pos[1] + (this._gasRng_next() - 0.5) * src.radius * 2,
+                vx,
+                vy,
+                life: 0,
+                color,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Draw particles
+    for (const p of this._gasParticles) {
+      const alpha = (1 - p.life) * 0.7;
+      if (alpha <= 0) continue;
+      const [sx, sy] = worldToScreen([p.x, p.y], camera, W, H);
+      c.beginPath();
+      c.arc(sx, sy, 2, 0, Math.PI * 2);
+      c.fillStyle = `rgba(${p.color},${alpha.toFixed(3)})`;
+      c.fill();
+    }
+  }
+
+  private drawBlackHoles(
+    bodies: BodyData[],
+    states: BodyState[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+  ): void {
+    const c = this.ctx2d;
+    for (let i = 0; i < n && i < bodies.length; i++) {
+      const body = bodies[i];
+      const state = states[i];
+      if (!state) continue;
+      if (!isBlackHole(body.mass, body.radius)) continue;
+
+      const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+      const innerR = body.radius * camera.scale * 1.2;
+      const outerR = innerR * 2.0;
+
+      // Accretion ring gradient
+      const grad = c.createRadialGradient(sx, sy, innerR * 1.3, sx, sy, outerR);
+      grad.addColorStop(0,   'rgba(255,160,40,0.85)');
+      grad.addColorStop(0.3, 'rgba(255,80,20,0.50)');
+      grad.addColorStop(1,   'rgba(255,40,0,0.00)');
+
+      c.beginPath();
+      c.arc(sx, sy, outerR, 0, Math.PI * 2);
+      c.fillStyle = grad;
+      c.fill();
+
+      // Black disk (covers WebGPU glow underneath)
+      c.beginPath();
+      c.arc(sx, sy, innerR, 0, Math.PI * 2);
+      c.fillStyle = '#000000';
+      c.fill();
     }
   }
 }

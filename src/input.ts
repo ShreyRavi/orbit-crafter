@@ -1,5 +1,5 @@
 import type { BodyData, Camera } from './constants';
-import { DT, bodyRadius, screenToWorld } from './constants';
+import { DT, bodyRadius, screenToWorld, DEFAULT_GHOST_MASS_LOG } from './constants';
 import type { DragState } from './renderer';
 
 // ─── Hit testing ──────────────────────────────────────────────────────────────
@@ -30,11 +30,18 @@ interface PanStart {
   moved: boolean;
 }
 
+interface BodyPressStart {
+  index: number;
+  clientX: number;
+  clientY: number;
+}
+
 // ─── InputHandler ─────────────────────────────────────────────────────────────
 
 export class InputHandler {
   // ── Public state ────────────────────────────────────────────────────────────
   hoveredIndex: number = -1;
+  selectedBodyIndex: number = -1;
 
   dragState: DragState = {
     active: false,
@@ -44,7 +51,9 @@ export class InputHandler {
   };
 
   ghostBody: BodyData | null = null;
-  ghostMassLog: number = 2; // mass = 10^2 = 100
+  ghostMassLog: number = DEFAULT_GHOST_MASS_LOG;
+
+  velocityDragMode: boolean = false;
 
   // ── Callbacks ───────────────────────────────────────────────────────────────
   onAddBody: (body: BodyData) => void = () => {};
@@ -57,6 +66,8 @@ export class InputHandler {
   onZoom: (delta: number) => void = () => {};
   onDragRelease: (index: number, pos: [number, number], vel: [number, number]) => void = () => {};
   onDragStart: (index: number) => void = () => {};
+  onSelectBody: (index: number) => void = () => {};
+  onVelocityDrag: (index: number, vel: [number, number]) => void = () => {};
 
   // ── Private ──────────────────────────────────────────────────────────────────
   private canvas: HTMLCanvasElement;
@@ -64,8 +75,13 @@ export class InputHandler {
   private getBodies: () => BodyData[];
   private placingBody: boolean = false;
   private _panStart: PanStart | null = null;
+  private _bodyPressStart: BodyPressStart | null = null;
+
+  // Velocity drag mode state
+  private _velDragStart: [number, number] | null = null;
 
   private readonly PAN_THRESHOLD = 5; // CSS pixels before pan activates
+  private readonly BODY_DRAG_THRESHOLD = 4; // CSS pixels before body drag starts
   private readonly PAN_STEP = 40;     // physical pixels per WASD keypress
 
   // Bound event handler references (for removeEventListener)
@@ -135,14 +151,15 @@ export class InputHandler {
     const bodies = this.getBodies();
     const hit    = hitTest(world, bodies, camera);
 
+    if (this.velocityDragMode && this.selectedBodyIndex >= 0) {
+      // Start velocity drag
+      this._velDragStart = [e.clientX, e.clientY];
+      return;
+    }
+
     if (hit >= 0) {
-      this.dragState = {
-        active: true,
-        bodyIndex: hit,
-        bodyWorldPos: world,
-        mouseHistory: [world],
-      };
-      this.onDragStart(hit);
+      // Track body press — don't start drag yet (wait for movement)
+      this._bodyPressStart = { index: hit, clientX: e.clientX, clientY: e.clientY };
     } else if (!this.placingBody) {
       // Track whether this becomes a pan or a click-to-place
       this._panStart = {
@@ -160,11 +177,37 @@ export class InputHandler {
     const camera = this.getCamera();
     const bodies = this.getBodies();
 
+    // Velocity drag mode
+    if (this.velocityDragMode && this._velDragStart !== null && this.selectedBodyIndex >= 0) {
+      const dx = e.clientX - this._velDragStart[0];
+      const dy = e.clientY - this._velDragStart[1];
+      const vel: [number, number] = [dx * 0.5, dy * 0.5];
+      this.onVelocityDrag(this.selectedBodyIndex, vel);
+      return;
+    }
+
     if (this.dragState.active) {
       this.dragState.bodyWorldPos = world;
       this.dragState.mouseHistory.push(world);
       if (this.dragState.mouseHistory.length > 5) {
         this.dragState.mouseHistory.shift();
+      }
+    } else if (this._bodyPressStart !== null) {
+      const dx = e.clientX - this._bodyPressStart.clientX;
+      const dy = e.clientY - this._bodyPressStart.clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > this.BODY_DRAG_THRESHOLD) {
+        // Convert body press to actual drag
+        const idx = this._bodyPressStart.index;
+        const bodyWorld = this._cssToWorld(this._bodyPressStart.clientX, this._bodyPressStart.clientY);
+        this.dragState = {
+          active: true,
+          bodyIndex: idx,
+          bodyWorldPos: bodyWorld,
+          mouseHistory: [bodyWorld],
+        };
+        this.onDragStart(idx);
+        this._bodyPressStart = null;
       }
     } else if (this._panStart !== null) {
       const dx = e.clientX - this._panStart.clientX;
@@ -185,6 +228,12 @@ export class InputHandler {
   }
 
   private _handleMouseUp(e: MouseEvent): void {
+    // Velocity drag mode end
+    if (this.velocityDragMode && this._velDragStart !== null) {
+      this._velDragStart = null;
+      return;
+    }
+
     if (this.dragState.active) {
       const hist = this.dragState.mouseHistory;
       let vel: [number, number] = [0, 0];
@@ -205,6 +254,12 @@ export class InputHandler {
         bodyWorldPos: [0, 0],
         mouseHistory: [],
       };
+    } else if (this._bodyPressStart !== null) {
+      // No drag movement — treat as select
+      const idx = this._bodyPressStart.index;
+      this.selectedBodyIndex = idx;
+      this.onSelectBody(idx);
+      this._bodyPressStart = null;
     } else if (this.placingBody && this.ghostBody !== null) {
       this.onAddBody(this.ghostBody);
       this.ghostBody = null;
@@ -266,6 +321,7 @@ export class InputHandler {
       case 'Escape':
         this.ghostBody   = null;
         this.placingBody = false;
+        this.velocityDragMode = false;
         break;
       // ── Pan ──────────────────────────────────────────────────────────────
       case 'w':
