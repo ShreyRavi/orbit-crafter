@@ -13,7 +13,7 @@ body {
   display: block;
 }
 
-#overlay { pointer-events: none; z-index: 1; }
+#overlay { z-index: 1; }
 
 #hud {
   position: fixed;
@@ -34,6 +34,30 @@ body {
 }
 
 #hud .label { color: rgba(255,255,255,0.45); }
+
+#controls-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  pointer-events: none;
+  font-family: 'Geist Mono', monospace;
+  font-size: 11px;
+  color: rgba(255,255,255,0.40);
+  background: rgba(0,0,0,0.45);
+  backdrop-filter: blur(8px);
+  text-align: center;
+  padding: 5px 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+  letter-spacing: 0.02em;
+}
+
+#controls-bar span {
+  color: rgba(255,255,255,0.65);
+}
 
 #error-banner {
   position: fixed;

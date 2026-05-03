@@ -1,4 +1,4 @@
-export const G = 6.674e-5;
+export const G = 1.0;
 export const DT = 0.016;
 export const SUBSTEP_COUNT = 4;
 export const STAR_MASS = 1e6;

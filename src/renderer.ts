@@ -133,13 +133,16 @@ export class Renderer {
   // Starfield
   private stars: Star[];
 
-  // Hint text
-  private hintStart: number | null = null;
-  private readonly HINT_FADE_DELAY = 4_000;
-  private readonly HINT_FADE_DURATION = 1_000;
-
   // Collision pulses
   private pulses: Pulse[] = [];
+
+  // Reusable uniform buffer staging data (both views share the same backing buffer)
+  private _uniBuffer = new ArrayBuffer(32);
+  private _uniF = new Float32Array(this._uniBuffer);
+  private _uniU = new Uint32Array(this._uniBuffer);
+
+  // Bind group cache — physics ping-pong cycles through 2 buffers, cache both
+  private _bindGroupCache: Map<GPUBuffer, GPUBindGroup> = new Map();
 
   constructor(
     device: GPUDevice,
@@ -283,27 +286,28 @@ export class Renderer {
     }
 
     // ── Update uniforms ───────────────────────────────────────────────────
-    const uniData = new ArrayBuffer(32);
-    const uniF = new Float32Array(uniData);
-    const uniU = new Uint32Array(uniData);
-    uniF[0] = camera.center[0];
-    uniF[1] = camera.center[1];
-    uniF[2] = camera.scale;
-    uniU[3] = n;
-    uniF[4] = W;
-    uniF[5] = H;
-    uniF[6] = 0;
-    uniF[7] = 0;
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, uniData);
+    this._uniF[0] = camera.center[0];
+    this._uniF[1] = camera.center[1];
+    this._uniF[2] = camera.scale;
+    this._uniU[3] = n;
+    this._uniF[4] = W;
+    this._uniF[5] = H;
+    this._uniF[6] = 0;
+    this._uniF[7] = 0;
+    this.device.queue.writeBuffer(this.uniformBuffer, 0, this._uniBuffer);
 
-    // ── Build bind group with the live physics buffer ─────────────────────
-    const bindGroup = this.device.createBindGroup({
-      layout: this.pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: bodyBuffer } },
-        { binding: 1, resource: { buffer: this.uniformBuffer } },
-      ],
-    });
+    // ── Bind group — cache per buffer reference (physics ping-pongs 2 bufs) ─
+    let bindGroup = this._bindGroupCache.get(bodyBuffer);
+    if (!bindGroup) {
+      bindGroup = this.device.createBindGroup({
+        layout: this.pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: bodyBuffer } },
+          { binding: 1, resource: { buffer: this.uniformBuffer } },
+        ],
+      });
+      this._bindGroupCache.set(bodyBuffer, bindGroup);
+    }
 
     // ── WebGPU render pass ────────────────────────────────────────────────
     const encoder = this.device.createCommandEncoder();
@@ -327,11 +331,11 @@ export class Renderer {
 
     this.drawStarfield(W, H);
     this.drawTrails(bodies, n, camera, W, H);
+    this.drawVelocityArrows(bodies, n, camera, W, H, dragState);
     this.drawCollisionPulses(bodies, n, camera, W, H, now);
     this.drawHoverRing(bodies, n, camera, W, H, hoveredIndex);
     this.drawDragVector(dragState, camera, W, H);
     this.drawGhostBody(ghostBody, camera, W, H);
-    this.drawHintText(W, H, now);
 
     // ── HUD ───────────────────────────────────────────────────────────────
     this.hudEl.innerHTML =
@@ -380,14 +384,14 @@ export class Renderer {
         const wx = buf[idx * 2];
         const wy = buf[idx * 2 + 1];
         const [sx, sy] = worldToScreen([wx, wy], camera, W, H);
-        const alpha = (j / (len - 1)) * 0.35;
+        const alpha = (j / (len - 1)) * 0.7;
         if (first) {
           c.moveTo(sx, sy);
           first = false;
         } else {
           // Draw segment by segment so we can vary alpha
           c.strokeStyle = `rgba(${color},${alpha.toFixed(3)})`;
-          c.lineWidth = 1;
+          c.lineWidth = 1.5;
           c.lineTo(sx, sy);
           c.stroke();
           c.beginPath();
@@ -537,30 +541,55 @@ export class Renderer {
     c.restore();
   }
 
-  private drawHintText(W: number, H: number, now: number): void {
-    if (this.hintStart === null) this.hintStart = now;
-
-    const elapsed = now - this.hintStart;
-    const totalDuration = this.HINT_FADE_DELAY + this.HINT_FADE_DURATION;
-    if (elapsed >= totalDuration) return;
-
-    let alpha = 0.7;
-    if (elapsed > this.HINT_FADE_DELAY) {
-      const fadeProgress = (elapsed - this.HINT_FADE_DELAY) / this.HINT_FADE_DURATION;
-      alpha = 0.7 * (1 - fadeProgress);
-    }
-
+  private drawVelocityArrows(
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+    dragState: DragState,
+  ): void {
     const c = this.ctx2d;
-    c.save();
-    c.font = "13px 'Geist Mono', monospace";
-    c.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
-    c.textAlign = 'center';
-    c.textBaseline = 'bottom';
-    c.fillText(
-      'drag · click to add · scroll mass · Delete removes · Space pause · R reset',
-      W / 2,
-      H - 16,
-    );
-    c.restore();
+    const VEL_SCALE = 1;
+    const VEL_MAX_PX = 80;
+    const VEL_MIN_PX = 8;
+    const HEAD_LEN = 7;
+
+    for (let i = 0; i < n && i < bodies.length; i++) {
+      if (dragState.active && dragState.bodyIndex === i) continue;
+      const body = bodies[i];
+      const [vx, vy] = body.vel;
+      const speed = Math.sqrt(vx * vx + vy * vy);
+      if (speed < 0.1) continue;
+
+      const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+      const rawLen = speed * camera.scale * VEL_SCALE;
+      const pxLen = Math.max(VEL_MIN_PX, Math.min(rawLen, VEL_MAX_PX));
+      const nx = vx / speed;
+      const ny = vy / speed;
+      const ex = sx + nx * pxLen;
+      const ey = sy + ny * pxLen;
+
+      const color = trailColor(body.mass);
+      const angle = Math.atan2(ey - sy, ex - sx);
+
+      c.save();
+      c.strokeStyle = `rgba(${color},0.55)`;
+      c.lineWidth = 1.5;
+
+      c.beginPath();
+      c.moveTo(sx, sy);
+      c.lineTo(ex, ey);
+      c.stroke();
+
+      c.beginPath();
+      c.moveTo(ex, ey);
+      c.lineTo(ex - HEAD_LEN * Math.cos(angle - Math.PI / 6), ey - HEAD_LEN * Math.sin(angle - Math.PI / 6));
+      c.moveTo(ex, ey);
+      c.lineTo(ex - HEAD_LEN * Math.cos(angle + Math.PI / 6), ey - HEAD_LEN * Math.sin(angle + Math.PI / 6));
+      c.stroke();
+
+      c.restore();
+    }
   }
 }

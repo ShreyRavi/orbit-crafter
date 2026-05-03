@@ -21,6 +21,15 @@ function hitTest(
   return -1;
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface PanStart {
+  clientX: number;
+  clientY: number;
+  cameraCenter: [number, number];
+  moved: boolean;
+}
+
 // ─── InputHandler ─────────────────────────────────────────────────────────────
 
 export class InputHandler {
@@ -53,8 +62,11 @@ export class InputHandler {
   private canvas: HTMLCanvasElement;
   private getCamera: () => Camera;
   private getBodies: () => BodyData[];
-  private getCssSize: () => [number, number];
   private placingBody: boolean = false;
+  private _panStart: PanStart | null = null;
+
+  private readonly PAN_THRESHOLD = 5; // CSS pixels before pan activates
+  private readonly PAN_STEP = 40;     // physical pixels per WASD keypress
 
   // Bound event handler references (for removeEventListener)
   private _onMouseMove: (e: MouseEvent) => void;
@@ -70,12 +82,10 @@ export class InputHandler {
     canvas: HTMLCanvasElement,
     getCamera: () => Camera,
     getBodies: () => BodyData[],
-    getCssSize: () => [number, number],
   ) {
     this.canvas = canvas;
     this.getCamera = getCamera;
     this.getBodies = getBodies;
-    this.getCssSize = getCssSize;
 
     this._onMouseMove = this._handleMouseMove.bind(this);
     this._onMouseDown = this._handleMouseDown.bind(this);
@@ -110,17 +120,43 @@ export class InputHandler {
   // ── Private: coordinate helpers ───────────────────────────────────────────
 
   private _cssToWorld(clientX: number, clientY: number): [number, number] {
-    const [cssW, cssH] = this.getCssSize();
     const rect = this.canvas.getBoundingClientRect();
-    const cssX = clientX - rect.left;
-    const cssY = clientY - rect.top;
-    return screenToWorld([cssX, cssY], this.getCamera(), cssW, cssH);
+    const dpr  = window.devicePixelRatio || 1;
+    const physX = (clientX - rect.left) * dpr;
+    const physY = (clientY - rect.top)  * dpr;
+    return screenToWorld([physX, physY], this.getCamera(), this.canvas.width, this.canvas.height);
   }
 
   // ── Private: mouse handlers ───────────────────────────────────────────────
 
+  private _handleMouseDown(e: MouseEvent): void {
+    const world  = this._cssToWorld(e.clientX, e.clientY);
+    const camera = this.getCamera();
+    const bodies = this.getBodies();
+    const hit    = hitTest(world, bodies, camera);
+
+    if (hit >= 0) {
+      this.dragState = {
+        active: true,
+        bodyIndex: hit,
+        bodyWorldPos: world,
+        mouseHistory: [world],
+      };
+      this.onDragStart(hit);
+    } else if (!this.placingBody) {
+      // Track whether this becomes a pan or a click-to-place
+      this._panStart = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        cameraCenter: [camera.center[0], camera.center[1]],
+        moved: false,
+      };
+    }
+    // placingBody=true: mousedown does nothing — placement confirmed on mouseup
+  }
+
   private _handleMouseMove(e: MouseEvent): void {
-    const world = this._cssToWorld(e.clientX, e.clientY);
+    const world  = this._cssToWorld(e.clientX, e.clientY);
     const camera = this.getCamera();
     const bodies = this.getBodies();
 
@@ -130,6 +166,17 @@ export class InputHandler {
       if (this.dragState.mouseHistory.length > 5) {
         this.dragState.mouseHistory.shift();
       }
+    } else if (this._panStart !== null) {
+      const dx = e.clientX - this._panStart.clientX;
+      const dy = e.clientY - this._panStart.clientY;
+      if (!this._panStart.moved && Math.sqrt(dx * dx + dy * dy) > this.PAN_THRESHOLD) {
+        this._panStart.moved = true;
+      }
+      if (this._panStart.moved) {
+        const dpr = window.devicePixelRatio || 1;
+        camera.center[0] = this._panStart.cameraCenter[0] - dx * dpr / camera.scale;
+        camera.center[1] = this._panStart.cameraCenter[1] - dy * dpr / camera.scale;
+      }
     } else if (this.placingBody && this.ghostBody !== null) {
       this.ghostBody = { ...this.ghostBody, pos: world };
     } else {
@@ -137,35 +184,7 @@ export class InputHandler {
     }
   }
 
-  private _handleMouseDown(e: MouseEvent): void {
-    const world = this._cssToWorld(e.clientX, e.clientY);
-    const camera = this.getCamera();
-    const bodies = this.getBodies();
-    const hit = hitTest(world, bodies, camera);
-
-    if (hit >= 0) {
-      // Start dragging an existing body
-      this.dragState = {
-        active: true,
-        bodyIndex: hit,
-        bodyWorldPos: world,
-        mouseHistory: [world],
-      };
-      this.onDragStart(hit);
-    } else if (!this.placingBody) {
-      // Start ghost placement in empty space
-      const mass = Math.pow(10, this.ghostMassLog);
-      this.ghostBody = {
-        pos: world,
-        vel: [0, 0],
-        mass,
-        radius: bodyRadius(mass),
-      };
-      this.placingBody = true;
-    }
-  }
-
-  private _handleMouseUp(_e: MouseEvent): void {
+  private _handleMouseUp(e: MouseEvent): void {
     if (this.dragState.active) {
       const hist = this.dragState.mouseHistory;
       let vel: [number, number] = [0, 0];
@@ -190,27 +209,35 @@ export class InputHandler {
       this.onAddBody(this.ghostBody);
       this.ghostBody = null;
       this.placingBody = false;
+    } else if (this._panStart !== null) {
+      if (!this._panStart.moved) {
+        // Quick click (no pan) → start ghost placement.
+        // Fall back to panStart coords on touch (touchend passes {} with no clientX).
+        const cx = e.clientX ?? this._panStart.clientX;
+        const cy = e.clientY ?? this._panStart.clientY;
+        const world = this._cssToWorld(cx, cy);
+        const mass  = Math.pow(10, this.ghostMassLog);
+        this.ghostBody   = { pos: world, vel: [0, 0], mass, radius: bodyRadius(mass) };
+        this.placingBody = true;
+      }
+      this._panStart = null;
     }
   }
 
   private _handleWheel(e: WheelEvent): void {
     e.preventDefault();
     if (this.placingBody && this.ghostBody !== null) {
-      // Adjust ghost mass
       const sign = e.deltaY > 0 ? -1 : 1;
       this.ghostMassLog = Math.max(0, Math.min(5, this.ghostMassLog + sign * 0.1));
       const mass = Math.pow(10, this.ghostMassLog);
-      this.ghostBody = {
-        ...this.ghostBody,
-        mass,
-        radius: bodyRadius(mass),
-      };
+      this.ghostBody = { ...this.ghostBody, mass, radius: bodyRadius(mass) };
     } else {
       this.onZoom(e.deltaY);
     }
   }
 
   private _handleKeyDown(e: KeyboardEvent): void {
+    const camera = this.getCamera();
     switch (e.key) {
       case 'Delete':
       case 'Backspace':
@@ -237,8 +264,25 @@ export class InputHandler {
         this.onTimeScaleDown();
         break;
       case 'Escape':
-        this.ghostBody = null;
+        this.ghostBody   = null;
         this.placingBody = false;
+        break;
+      // ── Pan ──────────────────────────────────────────────────────────────
+      case 'w':
+      case 'W':
+        camera.center[1] -= this.PAN_STEP / camera.scale;
+        break;
+      case 's':
+      case 'S':
+        camera.center[1] += this.PAN_STEP / camera.scale;
+        break;
+      case 'a':
+      case 'A':
+        camera.center[0] -= this.PAN_STEP / camera.scale;
+        break;
+      case 'd':
+      case 'D':
+        camera.center[0] += this.PAN_STEP / camera.scale;
         break;
     }
   }

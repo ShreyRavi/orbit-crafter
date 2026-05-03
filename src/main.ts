@@ -106,7 +106,6 @@ async function init(): Promise<void> {
     overlayCanvas,
     () => camera,
     () => physics.cpuBodies,
-    () => [window.innerWidth, window.innerHeight],
   );
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
