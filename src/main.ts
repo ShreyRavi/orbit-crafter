@@ -127,16 +127,22 @@ async function init(): Promise<void> {
   const errorBanner = document.getElementById('error-banner')!;
   const errorDetail = document.getElementById('error-detail')!;
 
-  if (!navigator.gpu) {
+  const showError = (msg: string): void => {
     errorBanner.hidden = false;
-    errorDetail.textContent = 'navigator.gpu not found — WebGPU is not supported in this browser.';
+    errorDetail.textContent = msg;
+    (document.getElementById('controls-bar') as HTMLElement).hidden = true;
+    (document.getElementById('toolbar')      as HTMLElement).hidden = true;
+    (document.getElementById('sidebar')      as HTMLElement).hidden = true;
+  };
+
+  if (!navigator.gpu) {
+    showError('navigator.gpu not found — WebGPU is not supported in this browser.');
     return;
   }
 
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) {
-    errorBanner.hidden = false;
-    errorDetail.textContent = 'requestAdapter() returned null — no suitable GPU adapter found.';
+    showError('requestAdapter() returned null — no suitable GPU adapter found.');
     return;
   }
 
@@ -145,8 +151,7 @@ async function init(): Promise<void> {
   device.lost.then((info) => {
     deviceLost = true;
     console.error('GPU device lost:', info.message);
-    errorBanner.hidden = false;
-    errorDetail.textContent = `GPU device lost: ${info.message}`;
+    showError(`GPU device lost: ${info.message}`);
   });
 
   // ── Canvases ──────────────────────────────────────────────────────────────
