@@ -2,9 +2,9 @@ import { STAR_MASS, PLANET_MASS, SCHWARZSCHILD_CONST } from './constants';
 
 export interface BodyState {
   name: string;
-  temperature: number;    // Kelvin, blackbody color
-  manualRadius: boolean;  // if true, don't auto-update radius from mass
-  color: string;          // 'r,g,b' for solid disc; derived from mass if empty
+  temperature: number;              // Kelvin, blackbody color
+  manualRadius: boolean;            // if true, don't auto-update radius from mass
+  color: [number, number, number];  // [r, g, b] solid disc color
 }
 
 export function generateName(mass: number, existingStates: BodyState[]): string {
@@ -26,15 +26,15 @@ export function defaultTemperature(mass: number): number {
   return 100;
 }
 
-export function defaultColor(mass: number): string {
-  if (mass > 0.1 * STAR_MASS) return '255,248,220'; // star — warm white
-  if (mass > 50000)            return '190,160,110'; // gas giant — tan-orange
-  if (mass > 20000)            return '160,185,215'; // large body — cool blue-grey
-  if (mass > 3000)             return '175,145,115'; // rocky — warm brown
-  return '160,162,165';                              // moon — neutral grey
+export function defaultColor(mass: number): [number, number, number] {
+  if (mass > 0.1 * STAR_MASS) return [255, 248, 220]; // star — warm white
+  if (mass > 50000)            return [190, 160, 110]; // gas giant — tan-orange
+  if (mass > 20000)            return [160, 185, 215]; // large body — cool blue-grey
+  if (mass > 3000)             return [175, 145, 115]; // rocky — warm brown
+  return [160, 162, 165];                              // moon — neutral grey
 }
 
-export function temperatureToColor(T: number): string {
+export function temperatureToColor(T: number): [number, number, number] {
   // Tanner Helland blackbody approximation
   const temp = Math.max(1000, Math.min(40000, T)) / 100;
 
@@ -69,7 +69,7 @@ export function temperatureToColor(T: number): string {
     b = Math.max(0, Math.min(255, b));
   }
 
-  return `${Math.round(r)},${Math.round(g)},${Math.round(b)}`;
+  return [Math.round(r), Math.round(g), Math.round(b)];
 }
 
 export function isBlackHole(mass: number, radius: number): boolean {

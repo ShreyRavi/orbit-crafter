@@ -323,6 +323,7 @@ export class InputHandler {
         this.ghostBody   = null;
         this.placingBody = false;
         this.velocityDragMode = false;
+        this._velDragStart = null;
         break;
       // ── Pan ──────────────────────────────────────────────────────────────
       case 'w':

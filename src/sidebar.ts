@@ -1,7 +1,7 @@
 import type { BodyData } from './constants';
 import type { BodyState } from './bodyState';
 import { temperatureToColor, isBlackHole, schwarzschildRadius } from './bodyState';
-import { bodyRadius } from './constants';
+import { STAR_MASS, PLANET_MASS } from './constants';
 
 export interface SidebarCallbacks {
   onNameChange: (idx: number, name: string) => void;
@@ -33,12 +33,13 @@ export class Sidebar {
   private vyInput!: HTMLInputElement;
   private tempRange!: HTMLInputElement;
   private colorSwatch!: HTMLElement;
-  private schwarVal!: HTMLElement;
   private bhWarning!: HTMLElement;
 
   // Velocity dial state
   private _dialDragging: boolean = false;
   private _currentVel: [number, number] = [0, 0];
+  private _boundDialMove!: (e: MouseEvent) => void;
+  private _boundDialUp!: () => void;
 
   constructor(container: HTMLElement, callbacks: SidebarCallbacks) {
     this.callbacks = callbacks;
@@ -108,8 +109,7 @@ export class Sidebar {
     this.vyInput = this.el.querySelector('.sb-vy-input')!;
     this.tempRange = this.el.querySelector('.sb-temp-range')!;
     this.colorSwatch = this.el.querySelector('.sb-color-swatch')!;
-    this.schwarVal = this.el.querySelector('.sb-bh-warning')!;
-    this.bhWarning = this.schwarVal;
+    this.bhWarning = this.el.querySelector('.sb-bh-warning')!;
 
     // Helper: fire on blur OR Enter key
     const onCommit = (input: HTMLInputElement, fn: () => void) => {
@@ -166,9 +166,11 @@ export class Sidebar {
     velDragBtn.addEventListener('click', () => this.callbacks.onStartVelocityDrag());
 
     // Velocity dial mouse events
+    this._boundDialMove = (e: MouseEvent) => this._dialMove(e);
+    this._boundDialUp   = () => { this._dialDragging = false; };
     this.velDial.addEventListener('mousedown', (e) => this._dialStart(e));
-    window.addEventListener('mousemove', (e) => this._dialMove(e));
-    window.addEventListener('mouseup', () => { this._dialDragging = false; });
+    window.addEventListener('mousemove', this._boundDialMove);
+    window.addEventListener('mouseup',   this._boundDialUp);
 
     this._drawDial();
   }
@@ -303,8 +305,8 @@ export class Sidebar {
   }
 
   private _massTypeLabel(mass: number): string {
-    if (mass > 0.1 * 1e6) return 'Star';
-    if (mass > 0.1 * 1e3) return 'Planet';
+    if (mass > 0.1 * STAR_MASS) return 'Star';
+    if (mass > 0.1 * PLANET_MASS) return 'Planet';
     return 'Moon';
   }
 
@@ -371,6 +373,8 @@ export class Sidebar {
   }
 
   destroy(): void {
+    window.removeEventListener('mousemove', this._boundDialMove);
+    window.removeEventListener('mouseup',   this._boundDialUp);
     this.el.innerHTML = '';
     this.el.classList.remove('open');
     this.isOpen = false;
@@ -378,5 +382,3 @@ export class Sidebar {
   }
 }
 
-// Needed for unused import suppression in strict mode
-void bodyRadius;

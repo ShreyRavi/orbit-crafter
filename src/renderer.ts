@@ -131,6 +131,8 @@ function visRadius(mass: number, scale: number): number {
   return Math.max(4, (logM - 1) * 5 + 2) * scale;
 }
 
+const ORBIT_DASH: number[] = [4, 6];
+
 // ─── Renderer ─────────────────────────────────────────────────────────────────
 
 export class Renderer {
@@ -161,7 +163,7 @@ export class Renderer {
   private _gasParticles: GasParticle[] = [];
 
   // Random seed for gas particles
-  private _gasRng: number = 0xaabbccdd;
+  private _gasRng: number = Date.now() | 0;
 
   // Reusable uniform buffer staging data (both views share the same backing buffer)
   private _uniBuffer = new ArrayBuffer(32);
@@ -170,6 +172,11 @@ export class Renderer {
 
   // Bind group cache — physics ping-pong cycles through 2 buffers, cache both
   private _bindGroupCache: Map<GPUBuffer, GPUBindGroup> = new Map();
+
+  // Sprite cache — off-screen baked body images, keyed by body index
+  private static readonly SPRITE_SIZE = 128;
+  private static readonly SPRITE_VR   = Renderer.SPRITE_SIZE / 5.6; // ~22.86 — maps to exact vr at drawImage scale
+  private _spriteCache: Map<number, { canvas: OffscreenCanvas; massKey: number; tempKey: number; colorKey: string }> = new Map();
 
   constructor(
     device: GPUDevice,
@@ -281,6 +288,20 @@ export class Renderer {
     this.trails.splice(index, 1);
     this.trailHead.splice(index, 1);
     this.trailLen.splice(index, 1);
+  }
+
+  /** Remove sprite cache entry for body at `index`, re-indexing higher entries. */
+  removeBodySprite(index: number): void {
+    const next: Map<number, { canvas: OffscreenCanvas; massKey: number; tempKey: number; colorKey: string }> = new Map();
+    for (const [k, v] of this._spriteCache) {
+      if (k < index)      next.set(k, v);
+      else if (k > index) next.set(k - 1, v);
+    }
+    this._spriteCache = next;
+  }
+
+  clearSpriteCache(): void {
+    this._spriteCache.clear();
   }
 
   addPulse(bodyIndex: number): void {
@@ -395,7 +416,7 @@ export class Renderer {
     }
 
     if (featureFlags.labels) {
-      this.drawLabels(bodies, bodyStates, n, camera, W, H, selectedBodyIndex);
+      this.drawLabels(bodies, bodyStates, n, camera, W, H, selectedBodyIndex, largestIdx);
     }
 
     if (featureFlags.lagrangePoints && lagrangePoints !== null) {
@@ -689,7 +710,7 @@ export class Renderer {
       const isSelected = i === selectedIdx;
 
       c.save();
-      c.setLineDash([4, 6]);
+      c.setLineDash(ORBIT_DASH);
       // Selected orbit is brighter
       c.strokeStyle = isSelected
         ? `rgba(${color},0.55)`
@@ -771,12 +792,8 @@ export class Renderer {
     W: number,
     H: number,
     selectedIdx: number,
+    largestIdx: number,
   ): void {
-    let largestIdx = 0;
-    for (let i = 1; i < n && i < bodies.length; i++) {
-      if (bodies[i].mass > bodies[largestIdx].mass) largestIdx = i;
-    }
-
     const c = this.ctx2d;
     c.textAlign = 'center';
     c.textBaseline = 'bottom';
@@ -924,20 +941,82 @@ export class Renderer {
       }
     }
 
-    // Draw particles with soft glow
+    // Draw particles as solid circles — avoids per-particle gradient allocation
+    c.save();
     for (const p of this._gasParticles) {
       const alpha = (1 - p.life) * 0.75;
       if (alpha <= 0) continue;
       const [sx, sy] = worldToScreen([p.x, p.y], camera, W, H);
       const pr = 3 * camera.scale + 1.5;
-      const grad = c.createRadialGradient(sx, sy, 0, sx, sy, pr);
-      grad.addColorStop(0,   `rgba(${p.color},${alpha.toFixed(3)})`);
-      grad.addColorStop(1,   `rgba(${p.color},0)`);
+      c.globalAlpha = alpha;
+      c.fillStyle = `rgb(${p.color})`;
       c.beginPath();
       c.arc(sx, sy, pr, 0, Math.PI * 2);
-      c.fillStyle = grad;
       c.fill();
     }
+    c.restore();
+  }
+
+  private _getBodySprite(idx: number, body: BodyData, state: BodyState): OffscreenCanvas {
+    const colorKey = state.color.join(',');
+    const cached = this._spriteCache.get(idx);
+    if (cached && cached.massKey === body.mass && cached.tempKey === state.temperature && cached.colorKey === colorKey) {
+      return cached.canvas;
+    }
+
+    const SIZE = Renderer.SPRITE_SIZE;
+    const vr   = Renderer.SPRITE_VR;
+    const cx = SIZE / 2, cy = SIZE / 2;
+
+    const oc  = new OffscreenCanvas(SIZE, SIZE);
+    const ctx = oc.getContext('2d')!;
+
+    // Halo
+    const rgb = temperatureToColor(state.temperature);
+    const haloGrad = ctx.createRadialGradient(cx, cy, vr * 0.85, cx, cy, vr * 2.8);
+    haloGrad.addColorStop(0,   `rgba(${rgb},0.22)`);
+    haloGrad.addColorStop(0.4, `rgba(${rgb},0.07)`);
+    haloGrad.addColorStop(1,   `rgba(${rgb},0)`);
+    ctx.beginPath();
+    ctx.arc(cx, cy, vr * 2.8, 0, Math.PI * 2);
+    ctx.fillStyle = haloGrad;
+    ctx.fill();
+
+    // Disc with radial lighting
+    const [cr, cg, cb] = state.color;
+    const hr = Math.min(255, cr + 40);
+    const hg = Math.min(255, cg + 40);
+    const hb = Math.min(255, cb + 40);
+    const discGrad = ctx.createRadialGradient(cx - vr * 0.3, cy - vr * 0.3, 0, cx, cy, vr);
+    discGrad.addColorStop(0, `rgb(${hr},${hg},${hb})`);
+    discGrad.addColorStop(1, `rgb(${Math.max(0, cr - 20)},${Math.max(0, cg - 20)},${Math.max(0, cb - 20)})`);
+    ctx.beginPath();
+    ctx.arc(cx, cy, vr, 0, Math.PI * 2);
+    ctx.fillStyle = discGrad;
+    ctx.fill();
+
+    // Gas giant bands
+    if (body.mass > 25000 && body.mass < 500000) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, vr, 0, Math.PI * 2);
+      ctx.clip();
+      const dk = (p: number) => `rgba(${Math.max(0, cr - p)},${Math.max(0, cg - p)},${Math.max(0, cb - p)},0.22)`;
+      const lt = (p: number) => `rgba(${Math.min(255, cr + p)},${Math.min(255, cg + p)},${Math.min(255, cb + p)},0.18)`;
+      for (const band of [
+        { yFrac: -0.55, hFrac: 0.18, col: dk(30) },
+        { yFrac: -0.12, hFrac: 0.22, col: lt(25) },
+        { yFrac:  0.22, hFrac: 0.18, col: dk(25) },
+        { yFrac:  0.55, hFrac: 0.15, col: lt(20) },
+      ]) {
+        ctx.fillStyle = band.col;
+        ctx.fillRect(cx - vr, cy + band.yFrac * vr - (band.hFrac * vr) / 2, vr * 2, band.hFrac * vr);
+      }
+      ctx.restore();
+    }
+
+    this._spriteCache.set(idx, { canvas: oc, massKey: body.mass, tempKey: state.temperature, colorKey });
+    return oc;
   }
 
   private drawPlanetBodies(
@@ -957,63 +1036,9 @@ export class Renderer {
 
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
       const vr = visRadius(body.mass, camera.scale);
-
-      // Atmospheric glow halo (temperature-based)
-      const rgb = temperatureToColor(state.temperature);
-      const haloGrad = c.createRadialGradient(sx, sy, vr * 0.85, sx, sy, vr * 2.8);
-      haloGrad.addColorStop(0,   `rgba(${rgb},0.22)`);
-      haloGrad.addColorStop(0.4, `rgba(${rgb},0.07)`);
-      haloGrad.addColorStop(1,   `rgba(${rgb},0)`);
-      c.beginPath();
-      c.arc(sx, sy, vr * 2.8, 0, Math.PI * 2);
-      c.fillStyle = haloGrad;
-      c.fill();
-
-      // Solid disc with radial lighting gradient
-      const discColor = state.color || '160,162,165';
-      const parts = discColor.split(',');
-      const cr = parseInt(parts[0].trim());
-      const cg = parseInt(parts[1].trim());
-      const cb = parseInt(parts[2].trim());
-      const hr = Math.min(255, cr + 40);
-      const hg = Math.min(255, cg + 40);
-      const hb = Math.min(255, cb + 40);
-
-      const discGrad = c.createRadialGradient(sx - vr * 0.3, sy - vr * 0.3, 0, sx, sy, vr);
-      discGrad.addColorStop(0, `rgb(${hr},${hg},${hb})`);
-      discGrad.addColorStop(1, `rgb(${Math.max(0, cr - 20)},${Math.max(0, cg - 20)},${Math.max(0, cb - 20)})`);
-
-      c.beginPath();
-      c.arc(sx, sy, vr, 0, Math.PI * 2);
-      c.fillStyle = discGrad;
-      c.fill();
-
-      // Gas giant horizontal bands (Jupiter-class and Saturn-class)
-      if (body.mass > 25000 && body.mass < 500000) {
-        c.save();
-        c.beginPath();
-        c.arc(sx, sy, vr, 0, Math.PI * 2);
-        c.clip();
-
-        const dk = (p: number) =>
-          `rgba(${Math.max(0, cr - p)},${Math.max(0, cg - p)},${Math.max(0, cb - p)},0.22)`;
-        const lt = (p: number) =>
-          `rgba(${Math.min(255, cr + p)},${Math.min(255, cg + p)},${Math.min(255, cb + p)},0.18)`;
-
-        const bands = [
-          { yFrac: -0.55, hFrac: 0.18, col: dk(30) },
-          { yFrac: -0.12, hFrac: 0.22, col: lt(25) },
-          { yFrac:  0.22, hFrac: 0.18, col: dk(25) },
-          { yFrac:  0.55, hFrac: 0.15, col: lt(20) },
-        ];
-
-        for (const band of bands) {
-          c.fillStyle = band.col;
-          c.fillRect(sx - vr, sy + band.yFrac * vr - (band.hFrac * vr) / 2, vr * 2, band.hFrac * vr);
-        }
-
-        c.restore();
-      }
+      const sprite   = this._getBodySprite(i, body, state);
+      const drawSize = vr * 2.8 * 2;
+      c.drawImage(sprite, sx - drawSize / 2, sy - drawSize / 2, drawSize, drawSize);
     }
   }
 

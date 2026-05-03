@@ -105,19 +105,19 @@ function makeInitialBodies(): BodyData[] {
 function makeInitialBodyStates(): BodyState[] {
   // color: accurate visual disc color (independent of temperature, which drives the glow halo)
   return [
-    { name: 'Sol',      temperature: 5800, manualRadius: false, color: '255,248,220' },
-    { name: 'Mercury',  temperature: 440,  manualRadius: false, color: '172,157,145' },
-    { name: 'Venus',    temperature: 737,  manualRadius: false, color: '228,198,104' },
-    { name: 'Earth',    temperature: 288,  manualRadius: false, color:  '72,140,195' },
-    { name: 'Moon',     temperature: 250,  manualRadius: false, color: '175,175,178' },
-    { name: 'Mars',     temperature: 210,  manualRadius: false, color: '195, 88, 50' },
-    { name: 'Jupiter',  temperature: 120,  manualRadius: false, color: '195,162,110' },
-    { name: 'Io',       temperature: 130,  manualRadius: false, color: '224,194, 60' },
-    { name: 'Ganymede', temperature: 110,  manualRadius: false, color: '142,144,148' },
-    { name: 'Saturn',   temperature: 134,  manualRadius: false, color: '228,208,152' },
-    { name: 'Titan',    temperature:  94,  manualRadius: false, color: '208,152, 80' },
-    { name: 'Uranus',   temperature:  76,  manualRadius: false, color: '148,208,215' },
-    { name: 'Neptune',  temperature:  72,  manualRadius: false, color:  '80,108,205' },
+    { name: 'Sol',      temperature: 5800, manualRadius: false, color: [255, 248, 220] },
+    { name: 'Mercury',  temperature: 440,  manualRadius: false, color: [172, 157, 145] },
+    { name: 'Venus',    temperature: 737,  manualRadius: false, color: [228, 198, 104] },
+    { name: 'Earth',    temperature: 288,  manualRadius: false, color: [ 72, 140, 195] },
+    { name: 'Moon',     temperature: 250,  manualRadius: false, color: [175, 175, 178] },
+    { name: 'Mars',     temperature: 210,  manualRadius: false, color: [195,  88,  50] },
+    { name: 'Jupiter',  temperature: 120,  manualRadius: false, color: [195, 162, 110] },
+    { name: 'Io',       temperature: 130,  manualRadius: false, color: [224, 194,  60] },
+    { name: 'Ganymede', temperature: 110,  manualRadius: false, color: [142, 144, 148] },
+    { name: 'Saturn',   temperature: 134,  manualRadius: false, color: [228, 208, 152] },
+    { name: 'Titan',    temperature:  94,  manualRadius: false, color: [208, 152,  80] },
+    { name: 'Uranus',   temperature:  76,  manualRadius: false, color: [148, 208, 215] },
+    { name: 'Neptune',  temperature:  72,  manualRadius: false, color: [ 80, 108, 205] },
   ];
 }
 
@@ -374,6 +374,7 @@ async function init(): Promise<void> {
     if (physics.N <= 1) return;
     const bodies = physics.cpuBodies.filter((_b, i) => i !== index);
     renderer.removeBodyTrail(index);
+    renderer.removeBodySprite(index);
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
     bodyStates.splice(index, 1);
@@ -394,6 +395,7 @@ async function init(): Promise<void> {
     const bodies = makeInitialBodies();
     physics.init(bodies);
     renderer.setBodyCount(bodies.length);
+    renderer.clearSpriteCache();
     bodyStates = makeInitialBodyStates();
     timeScale = 1.0;
     selectedBodyIndex = -1;
@@ -455,6 +457,7 @@ async function init(): Promise<void> {
     bodies[i] = { ...bi, mass: newMass, radius: bodyRadius(newMass), vel: newVel };
     bodies.splice(j, 1);
     renderer.removeBodyTrail(j);
+    renderer.removeBodySprite(j);
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
     renderer.addPulse(i);
@@ -488,6 +491,7 @@ async function init(): Promise<void> {
     }
 
     recomputeLagrange();
+    recomputeOrbitPaths();
   };
 
   // ── Animation state ───────────────────────────────────────────────────────

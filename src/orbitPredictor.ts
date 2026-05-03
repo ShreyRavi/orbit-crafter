@@ -131,18 +131,39 @@ function keplerPath(body: BodyData, attractor: BodyData): Point2D[] {
   return points;
 }
 
+function accel(
+  i: number, n: number,
+  px: Float64Array, py: Float64Array,
+  masses: Float64Array,
+): [number, number] {
+  let ax = 0, ay = 0;
+  for (let j = 0; j < n; j++) {
+    if (j === i) continue;
+    const dx = px[j] - px[i];
+    const dy = py[j] - py[i];
+    const r2 = dx * dx + dy * dy + SOFTENING_EPSILON * SOFTENING_EPSILON;
+    const aMag = G * masses[j] / r2;
+    const r = Math.sqrt(r2);
+    ax += (aMag * dx) / r;
+    ay += (aMag * dy) / r;
+  }
+  return [ax, ay];
+}
+
 function numericalPath(idx: number, bodies: BodyData[]): Point2D[] {
   const n = bodies.length;
-  const posX = new Float64Array(n);
-  const posY = new Float64Array(n);
-  const velX = new Float64Array(n);
-  const velY = new Float64Array(n);
+  const px  = new Float64Array(n);
+  const py  = new Float64Array(n);
+  const vx  = new Float64Array(n);
+  const vy  = new Float64Array(n);
+  const mas = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
-    posX[i] = bodies[i].pos[0];
-    posY[i] = bodies[i].pos[1];
-    velX[i] = bodies[i].vel[0];
-    velY[i] = bodies[i].vel[1];
+    px[i]  = bodies[i].pos[0];
+    py[i]  = bodies[i].pos[1];
+    vx[i]  = bodies[i].vel[0];
+    vy[i]  = bodies[i].vel[1];
+    mas[i] = bodies[i].mass;
   }
 
   const dt = DT * 4;
@@ -150,31 +171,56 @@ function numericalPath(idx: number, bodies: BodyData[]): Point2D[] {
   const recordEvery = 5;
   const points: Point2D[] = [];
 
+  // RK4 staging arrays
+  const k1px = new Float64Array(n); const k1py = new Float64Array(n);
+  const k1vx = new Float64Array(n); const k1vy = new Float64Array(n);
+  const k2px = new Float64Array(n); const k2py = new Float64Array(n);
+  const k2vx = new Float64Array(n); const k2vy = new Float64Array(n);
+  const k3px = new Float64Array(n); const k3py = new Float64Array(n);
+  const k3vx = new Float64Array(n); const k3vy = new Float64Array(n);
+  const k4px = new Float64Array(n); const k4py = new Float64Array(n);
+  const k4vx = new Float64Array(n); const k4vy = new Float64Array(n);
+  const tmpPx = new Float64Array(n); const tmpPy = new Float64Array(n);
+
   for (let step = 0; step < totalSteps; step++) {
-    // Euler integration for all bodies
+    // k1
     for (let i = 0; i < n; i++) {
-      let ax = 0;
-      let ay = 0;
-      for (let j = 0; j < n; j++) {
-        if (j === i) continue;
-        const dx = posX[j] - posX[i];
-        const dy = posY[j] - posY[i];
-        const r2 = dx * dx + dy * dy + SOFTENING_EPSILON * SOFTENING_EPSILON;
-        const aMag = G * bodies[j].mass / r2;
-        const r = Math.sqrt(r2);
-        ax += (aMag * dx) / r;
-        ay += (aMag * dy) / r;
-      }
-      velX[i] += ax * dt;
-      velY[i] += ay * dt;
+      k1px[i] = vx[i]; k1py[i] = vy[i];
+      const [ax, ay] = accel(i, n, px, py, mas);
+      k1vx[i] = ax; k1vy[i] = ay;
     }
+    // k2
+    for (let i = 0; i < n; i++) { tmpPx[i] = px[i] + k1px[i] * dt * 0.5; tmpPy[i] = py[i] + k1py[i] * dt * 0.5; }
     for (let i = 0; i < n; i++) {
-      posX[i] += velX[i] * dt;
-      posY[i] += velY[i] * dt;
+      k2px[i] = vx[i] + k1vx[i] * dt * 0.5; k2py[i] = vy[i] + k1vy[i] * dt * 0.5;
+      const [ax, ay] = accel(i, n, tmpPx, tmpPy, mas);
+      k2vx[i] = ax; k2vy[i] = ay;
+    }
+    // k3
+    for (let i = 0; i < n; i++) { tmpPx[i] = px[i] + k2px[i] * dt * 0.5; tmpPy[i] = py[i] + k2py[i] * dt * 0.5; }
+    for (let i = 0; i < n; i++) {
+      k3px[i] = vx[i] + k2vx[i] * dt * 0.5; k3py[i] = vy[i] + k2vy[i] * dt * 0.5;
+      const [ax, ay] = accel(i, n, tmpPx, tmpPy, mas);
+      k3vx[i] = ax; k3vy[i] = ay;
+    }
+    // k4
+    for (let i = 0; i < n; i++) { tmpPx[i] = px[i] + k3px[i] * dt; tmpPy[i] = py[i] + k3py[i] * dt; }
+    for (let i = 0; i < n; i++) {
+      k4px[i] = vx[i] + k3vx[i] * dt; k4py[i] = vy[i] + k3vy[i] * dt;
+      const [ax, ay] = accel(i, n, tmpPx, tmpPy, mas);
+      k4vx[i] = ax; k4vy[i] = ay;
+    }
+    // Combine
+    const sixth = dt / 6;
+    for (let i = 0; i < n; i++) {
+      px[i] += (k1px[i] + 2 * k2px[i] + 2 * k3px[i] + k4px[i]) * sixth;
+      py[i] += (k1py[i] + 2 * k2py[i] + 2 * k3py[i] + k4py[i]) * sixth;
+      vx[i] += (k1vx[i] + 2 * k2vx[i] + 2 * k3vx[i] + k4vx[i]) * sixth;
+      vy[i] += (k1vy[i] + 2 * k2vy[i] + 2 * k3vy[i] + k4vy[i]) * sixth;
     }
 
     if (step % recordEvery === 0) {
-      points.push([posX[idx], posY[idx]]);
+      points.push([px[idx], py[idx]]);
     }
   }
 

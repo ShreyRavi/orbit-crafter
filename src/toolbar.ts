@@ -81,7 +81,7 @@ export class Toolbar {
       labels: true,
       lagrangePoints: true,
       lagrangeCount: 5,
-      gasExchange: true,
+      gasExchange: false,
     };
 
     this.container = container;
