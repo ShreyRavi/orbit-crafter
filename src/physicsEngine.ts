@@ -6,7 +6,7 @@ import {
   MAX_BODIES,
   BODY_STRIDE,
   SOFTENING_EPSILON,
-  COLLISION_OVERLAP,
+  collisionRadius,
 } from "./constants";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> bodyOut : array<Body>;
 @group(0) @binding(2) var<uniform>             params  : Params;
 
-@compute @workgroup_size(1)
+@compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3u) {
   let i = gid.x;
   if (i >= params.n) { return; }
@@ -152,6 +152,9 @@ export class PhysicsEngine {
   /** Incremented by init/setBodies; lets mapAsync callbacks detect stale reads. */
   private generation: number = 0;
 
+  /** Pre-allocated params staging (avoids GC per substep). */
+  private _paramsView = new DataView(new ArrayBuffer(16));
+
   // -------------------------------------------------------------------------
 
   constructor(device: GPUDevice) {
@@ -202,20 +205,19 @@ export class PhysicsEngine {
     const dtSub = dt / SUBSTEP_COUNT;
     const encoder = this.device.createCommandEncoder();
 
+    // Write params once per tick (n and G don't change mid-tick)
+    this._paramsView.setUint32(0,  this.N,  true);
+    this._paramsView.setFloat32(4, dtSub,   true);
+    this._paramsView.setFloat32(8, G,       true);
+    this._paramsView.setFloat32(12, 0,      true);
+    this.device.queue.writeBuffer(this.paramsBuffer, 0, this._paramsView.buffer);
+
     for (let s = 0; s < SUBSTEP_COUNT; s++) {
-      // Update params uniform for this substep.
-      const paramData = new ArrayBuffer(16);
-      const paramView = new DataView(paramData);
-      paramView.setUint32(0,  this.N,   true);
-      paramView.setFloat32(4, dtSub,    true);
-      paramView.setFloat32(8, G,        true);
-      paramView.setFloat32(12, 0,       true); // _pad
-      this.device.queue.writeBuffer(this.paramsBuffer, 0, paramData);
 
       const pass = encoder.beginComputePass();
       pass.setPipeline(this.pipeline);
       pass.setBindGroup(0, this.pingIndex === 0 ? this.bgAtoB : this.bgBtoA);
-      pass.dispatchWorkgroups(Math.max(this.N, 1), 1, 1);
+      pass.dispatchWorkgroups(Math.ceil(Math.max(this.N, 1) / 64), 1, 1);
       pass.end();
 
       this.pingIndex ^= 1; // swap
@@ -374,9 +376,9 @@ export class PhysicsEngine {
         const dx   = bj.pos[0] - bi.pos[0];
         const dy   = bj.pos[1] - bi.pos[1];
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < (bi.radius + bj.radius) * COLLISION_OVERLAP) {
+        const threshold = collisionRadius(bi.mass) + collisionRadius(bj.mass);
+        if (dist < threshold) {
           this.onMerge(i, j);
-          // One merge per readback frame — indices invalidated after merge, stop.
           return;
         }
       }

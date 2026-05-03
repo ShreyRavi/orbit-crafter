@@ -1,5 +1,5 @@
 import type { BodyData, Camera } from './constants';
-import { DT, bodyRadius, screenToWorld, DEFAULT_GHOST_MASS_LOG } from './constants';
+import { DT, bodyRadius, collisionRadius, screenToWorld, DEFAULT_GHOST_MASS_LOG } from './constants';
 import type { DragState } from './renderer';
 
 // ─── Hit testing ──────────────────────────────────────────────────────────────
@@ -7,14 +7,15 @@ import type { DragState } from './renderer';
 function hitTest(
   mouseWorld: [number, number],
   bodies: BodyData[],
-  camera: Camera,
+  _camera: Camera,
 ): number {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     const dx = mouseWorld[0] - b.pos[0];
     const dy = mouseWorld[1] - b.pos[1];
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist <= (b.radius * 1.5) / camera.scale) {
+    // Use world-space visual radius (same formula as renderer's visRadius at scale=1).
+    if (dist <= collisionRadius(b.mass)) {
       return i;
     }
   }

@@ -4,6 +4,7 @@ import {
   CAMERA_SCALE_MIN,
   CAMERA_SCALE_MAX,
   MAX_BODIES,
+  STAR_MASS,
   bodyRadius,
   ORBIT_PREDICT_INTERVAL,
 } from './constants';
@@ -58,39 +59,38 @@ function bodyAtPerihelion(
 // ─── Initial bodies ────────────────────────────────────────────────────────────
 
 function makeInitialBodies(): BodyData[] {
-  const SM: number = 1e6;
+  const SM = STAR_MASS;
   const sp: [number, number] = [0, 0];
   const sv: [number, number] = [0, 0];
 
   const sun: BodyData = { pos: sp, vel: sv, mass: SM, radius: bodyRadius(SM) };
 
-  // Physics radii are now tiny (collision-only). Visual size is drawn from mass log-scale.
-  // COLLISION_OVERLAP=0.06 → merge threshold ~0.3 world units, far below any moon orbit.
   const P = (a: number, e: number, deg: number, mass: number) =>
     bodyAtPerihelion(a, e, toRad(deg), SM, sp, sv, mass);
 
-  const mercury = P(78,    0.206, 320,   800);
-  const venus   = P(144,   0.007,  45, 20000);
-  const earth   = P(200,   0.017,  90, 30000);
-  const mars    = P(304,   0.093, 150, 10000);
-  const jupiter = P(1040,  0.049, 210, 80000);
-  const saturn  = P(1900,  0.057, 270, 35000);
-  const uranus  = P(3840,  0.047, 320,  8000);
-  const neptune = P(6020,  0.010,  30,  8000);
+  // Inner planets spread wider for visual clarity and stability
+  const mercury = P(110,   0.206, 320,    800);
+  const venus   = P(195,   0.007,  45,  20000);
+  const earth   = P(290,   0.017,  90,  30000);
+  const mars    = P(440,   0.093, 150,  10000);
+  const jupiter = P(1300,  0.049, 210,  80000);
+  const saturn  = P(2400,  0.057, 270,  35000);
+  const uranus  = P(4800,  0.047, 320,   8000);
+  const neptune = P(7500,  0.010,  30,   8000);
 
   const Mo = (
     parent: BodyData, pm: number,
     a: number, e: number, deg: number, mass: number, retro = false,
   ) => bodyAtPerihelion(a, e, toRad(deg), pm, parent.pos, parent.vel, mass, retro);
 
-  // Earth Hill sphere ≈ 43 @ orbit=200. Moon at a=40 inside (barely), numerical orbit shown.
+  // Earth Hill sphere scales with new orbit. Moon orbit safe at 40.
   const luna     = Mo(earth,   30000,   40, 0.055,  0, 30);
 
-  // Jupiter Hill sphere ≈ 335. Both moons F_ratio >> 4 → Kepler ellipses.
+  // Jupiter moons — Hill sphere ~400, both well inside
   const io       = Mo(jupiter, 80000,   60, 0.004,  0, 30);
   const ganymede = Mo(jupiter, 80000,  110, 0.001, 90, 50);
 
-  // Saturn Hill sphere ≈ 430. Titan F_ratio ≈ 20 → Kepler.
+  // Saturn → Titan
   const titan    = Mo(saturn,  35000,   90, 0.029, 45, 40);
 
   return [
@@ -330,6 +330,10 @@ async function init(): Promise<void> {
   // ── Callbacks ─────────────────────────────────────────────────────────────
 
   input.onSelectBody = (index: number): void => {
+    // Close existing sidebar if selecting a different body
+    if (sidebar.isOpen && index !== selectedBodyIndex) {
+      sidebar.close();
+    }
     selectedBodyIndex = index;
     input.selectedBodyIndex = index;
     const bodies = physics.cpuBodies;
