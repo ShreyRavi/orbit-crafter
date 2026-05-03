@@ -29,7 +29,7 @@ export function predictOrbit(idx: number, bodies: BodyData[]): Point2D[] {
   }
 
   // Use Kepler if dominant attractor is 10× stronger or only one other body
-  const useKepler = bodies.length === 2 || (secondForce > 0 && maxForce / secondForce > 10);
+  const useKepler = bodies.length === 2 || (secondForce > 0 && maxForce / secondForce > 4);
 
   if (useKepler && attractorIdx >= 0) {
     return keplerPath(body, bodies[attractorIdx]);

@@ -63,34 +63,45 @@ function makeInitialBodies(): BodyData[] {
 
   const sun: BodyData = { pos: sp, vel: sv, mass: SM, radius: bodyRadius(SM) };
 
-  // Planet factory — orbits Sun at given semi-major axis (AU equiv), eccentricity, perihelion angle
+  // Masses chosen so each planet's Hill sphere comfortably contains its moons,
+  // and each moon's F_planet/F_sun ratio exceeds 4× (Kepler threshold).
+  // COLLISION_OVERLAP=0.1 means merge only at dist < 0.1*(r1+r2).
   const P = (a: number, e: number, deg: number, mass: number) =>
     bodyAtPerihelion(a, e, toRad(deg), SM, sp, sv, mass);
 
-  const mercury = P(78,    0.206, 320, 100);
-  const venus   = P(144,   0.007,  45, 350);
-  const earth   = P(200,   0.017,  90, 400);
-  const mars    = P(304,   0.093, 150, 120);
-  const jupiter = P(1040,  0.049, 210, 20000);
-  const saturn  = P(1900,  0.057, 270, 8000);
-  const uranus  = P(3840,  0.047, 320, 1200);
-  const neptune = P(6020,  0.010,  30, 1400);
+  const mercury = P(78,    0.206, 320,   800);
+  const venus   = P(144,   0.007,  45, 20000);
+  const earth   = P(200,   0.017,  90, 30000);
+  const mars    = P(304,   0.093, 150, 10000);
+  const jupiter = P(1040,  0.049, 210, 80000);
+  const saturn  = P(1900,  0.057, 270, 35000);
+  const uranus  = P(3840,  0.047, 320,  8000);
+  const neptune = P(6020,  0.010,  30,  8000);
 
-  // Moon factory — orbits a planet
+  // Moon factory — use ACTUAL parent mass for velocity computation
   const Mo = (
     parent: BodyData, pm: number,
     a: number, e: number, deg: number, mass: number, retro = false,
   ) => bodyAtPerihelion(a, e, toRad(deg), pm, parent.pos, parent.vel, mass, retro);
 
-  const luna     = Mo(earth,   400,     25, 0.055,   0, 30);
-  const phobos   = Mo(mars,    120,      8, 0.015,  60,  2);
-  const deimos   = Mo(mars,    120,     14, 0.000, 120,  2);
-  const io       = Mo(jupiter, 20000,   50, 0.004,   0, 25);
-  const europa   = Mo(jupiter, 20000,   80, 0.009,  90, 20);
-  const ganymede = Mo(jupiter, 20000,  128, 0.001, 180, 40);
-  const callisto = Mo(jupiter, 20000,  226, 0.007, 270, 30);
-  const titan    = Mo(saturn,  8000,    80, 0.029,  45, 35);
-  const triton   = Mo(neptune, 1400,    40, 0.000,   0, 15, true);
+  // Earth: Hill sphere = 200*(30000/3e6)^(1/3) ≈ 43. Moon at a=15: F_ratio≈5.3 → Kepler ✓
+  const luna     = Mo(earth,   30000,   15, 0.055,   0, 30);
+
+  // Mars: Hill sphere ≈ 45. Phobos at a=9: F_ratio≈11 ✓, Deimos at a=15: F_ratio≈4.1 ✓
+  const phobos   = Mo(mars,    10000,    9, 0.015,  60,  2);
+  const deimos   = Mo(mars,    10000,   15, 0.000, 120,  2);
+
+  // Jupiter: Hill sphere ≈ 335. All Galilean moons F_ratio >> 4 ✓
+  const io       = Mo(jupiter, 80000,   50, 0.004,   0, 25);
+  const europa   = Mo(jupiter, 80000,   80, 0.009,  90, 20);
+  const ganymede = Mo(jupiter, 80000,  110, 0.001, 180, 40);
+  const callisto = Mo(jupiter, 80000,  130, 0.007, 270, 30);
+
+  // Saturn: Hill sphere ≈ 430. Titan at a=80: F_ratio≈20 ✓
+  const titan    = Mo(saturn,  35000,   80, 0.029,  45, 35);
+
+  // Neptune: Hill sphere ≈ 836. Triton at a=40: F_ratio≈181 ✓
+  const triton   = Mo(neptune,  8000,   40, 0.000,   0, 15, true);
 
   return [
     sun, mercury, venus, earth, luna,

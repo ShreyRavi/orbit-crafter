@@ -48,7 +48,7 @@ fn main(@builtin(global_invocation_id) gid : vec3u) {
     let dist_sq = dot(r, r);
     let dist = sqrt(dist_sq);
     let aMag = params.G * bodyIn[j].mass / r2;
-    let closeThresh = (b.radius + bodyIn[j].radius) * 3.0;
+    let closeThresh = (b.radius + bodyIn[j].radius) * 1.5;
     let tidalFactor = select(1.0, 1.0 + 0.3 * (1.0 - dist / max(closeThresh, 0.001)), dist < closeThresh);
     acc += r * ((aMag / sqrt(r2)) * tidalFactor);
   }

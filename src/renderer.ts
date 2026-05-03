@@ -357,7 +357,7 @@ export class Renderer {
     this.drawStarfield(W, H);
 
     if (featureFlags.orbitPaths) {
-      this.drawOrbitPaths(orbitPaths, camera, W, H, bodies, n);
+      this.drawOrbitPaths(orbitPaths, camera, W, H, bodies, n, selectedBodyIndex);
     }
 
     if (featureFlags.trails) {
@@ -653,17 +653,22 @@ export class Renderer {
     H: number,
     bodies: BodyData[],
     n: number,
+    selectedIdx: number,
   ): void {
     const c = this.ctx2d;
     for (let i = 0; i < paths.length && i < n; i++) {
       const path = paths[i];
       if (path.length < 2) continue;
       const color = trailColor(bodies[i]?.mass ?? 1);
+      const isSelected = i === selectedIdx;
 
       c.save();
       c.setLineDash([4, 6]);
-      c.strokeStyle = `rgba(${color},0.28)`;
-      c.lineWidth = 1;
+      // Selected orbit is brighter
+      c.strokeStyle = isSelected
+        ? `rgba(${color},0.55)`
+        : `rgba(${color},0.22)`;
+      c.lineWidth = isSelected ? 1.5 : 1;
       c.beginPath();
       for (let j = 0; j < path.length; j++) {
         const [wx, wy] = path[j];
@@ -674,8 +679,8 @@ export class Renderer {
       c.stroke();
       c.restore();
 
-      // ── Apsis markers ──────────────────────────────────────────────────────
-      if (path.length < 4) continue;
+      // ── Apsis markers — only for selected body ─────────────────────────────
+      if (!isSelected || path.length < 4) continue;
 
       // Find dominant attractor by locating body closest to orbit mean centre
       let sumX = 0, sumY = 0;
@@ -741,12 +746,20 @@ export class Renderer {
     H: number,
     selectedIdx: number,
   ): void {
+    // Find the largest-mass body to always label it (the Sun / primary star)
+    let largestIdx = 0;
+    for (let i = 1; i < n && i < bodies.length; i++) {
+      if (bodies[i].mass > bodies[largestIdx].mass) largestIdx = i;
+    }
+
     const c = this.ctx2d;
     c.font = `bold 15px 'Geist Mono', monospace`;
     c.textAlign = 'center';
     c.textBaseline = 'bottom';
 
     for (let i = 0; i < n && i < bodies.length; i++) {
+      // Only label the selected body and the largest (primary) body
+      if (i !== selectedIdx && i !== largestIdx) continue;
       const body = bodies[i];
       const state = states[i];
       if (!state) continue;
@@ -828,12 +841,14 @@ export class Renderer {
     // Remove dead particles
     this._gasParticles = this._gasParticles.filter(p => p.life < 1);
 
-    // Spawn new particles for close pairs
+    // Spawn new particles for close pairs — planets only (skip moon-mass bodies)
+    const GAS_MASS_THRESHOLD = 500;
     if (this._gasParticles.length < MAX_PARTICLES) {
       for (let i = 0; i < n; i++) {
         for (let j = i + 1; j < n; j++) {
           const bi = bodies[i];
           const bj = bodies[j];
+          if (bi.mass < GAS_MASS_THRESHOLD || bj.mass < GAS_MASS_THRESHOLD) continue;
           const dx = bj.pos[0] - bi.pos[0];
           const dy = bj.pos[1] - bi.pos[1];
           const dist = Math.sqrt(dx * dx + dy * dy);
