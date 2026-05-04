@@ -1,10 +1,8 @@
 import type { BodyData, Camera } from './constants';
 import {
-  G,
   CAMERA_SCALE_MIN,
   CAMERA_SCALE_MAX,
   MAX_BODIES,
-  STAR_MASS,
   bodyRadius,
   ORBIT_PREDICT_INTERVAL,
 } from './constants';
@@ -22,104 +20,9 @@ import { Toolbar } from './toolbar';
 import { Sidebar } from './sidebar';
 import { computeLagrangePoints } from './lagrange';
 import { predictOrbit, findAttractors } from './orbitPredictor';
-
-// ─── Solar system helpers ─────────────────────────────────────────────────────
-
-function toRad(deg: number): number {
-  return deg * Math.PI / 180;
-}
-
-/**
- * Place a body at its orbital perihelion.
- * periAngle = angle (radians) of the perihelion direction from +x axis.
- * retrograde = true reverses orbital direction (e.g. Triton).
- */
-function bodyAtPerihelion(
-  a: number,
-  e: number,
-  periAngle: number,
-  centralMass: number,
-  centralPos: [number, number],
-  centralVel: [number, number],
-  myMass: number,
-  retrograde = false,
-): BodyData {
-  const mu  = G * centralMass;
-  const r_p = a * (1 - e);
-  const v_p = Math.sqrt(Math.max(0, mu * (1 + e) / r_p));
-  const ca  = Math.cos(periAngle);
-  const sa  = Math.sin(periAngle);
-  const px  = centralPos[0] + r_p * ca;
-  const py  = centralPos[1] + r_p * sa;
-  const vx  = retrograde ? centralVel[0] + v_p * sa : centralVel[0] - v_p * sa;
-  const vy  = retrograde ? centralVel[1] - v_p * ca : centralVel[1] + v_p * ca;
-  return { pos: [px, py], vel: [vx, vy], mass: myMass, radius: bodyRadius(myMass) };
-}
-
-// ─── Initial bodies ────────────────────────────────────────────────────────────
-
-function makeInitialBodies(): BodyData[] {
-  const SM = STAR_MASS;
-  const sp: [number, number] = [0, 0];
-  const sv: [number, number] = [0, 0];
-
-  const sun: BodyData = { pos: sp, vel: sv, mass: SM, radius: bodyRadius(SM) };
-
-  const P = (a: number, e: number, deg: number, mass: number) =>
-    bodyAtPerihelion(a, e, toRad(deg), SM, sp, sv, mass);
-
-  // Inner planets spread wider for visual clarity and stability
-  const mercury = P(110,   0.206, 320,    800);
-  const venus   = P(195,   0.007,  45,  20000);
-  const earth   = P(290,   0.017,  90,  30000);
-  const mars    = P(440,   0.093, 150,  10000);
-  const jupiter = P(1300,  0.049, 210,  80000);
-  const saturn  = P(2400,  0.057, 270,  35000);
-  const uranus  = P(4800,  0.047, 320,   8000);
-  const neptune = P(7500,  0.010,  30,   8000);
-
-  const Mo = (
-    parent: BodyData, pm: number,
-    a: number, e: number, deg: number, mass: number, retro = false,
-  ) => bodyAtPerihelion(a, e, toRad(deg), pm, parent.pos, parent.vel, mass, retro);
-
-  // Earth Hill sphere scales with new orbit. Moon orbit safe at 40.
-  const luna     = Mo(earth,   30000,   40, 0.055,  0, 30);
-
-  // Jupiter moons — Hill sphere ~400, both well inside
-  const io       = Mo(jupiter, 80000,   60, 0.004,  0, 30);
-  const ganymede = Mo(jupiter, 80000,  110, 0.001, 90, 50);
-
-  // Saturn → Titan
-  const titan    = Mo(saturn,  35000,   90, 0.029, 45, 40);
-
-  return [
-    sun, mercury, venus, earth, luna,
-    mars,
-    jupiter, io, ganymede,
-    saturn, titan,
-    uranus, neptune,
-  ];
-}
-
-function makeInitialBodyStates(): BodyState[] {
-  // color: accurate visual disc color (independent of temperature, which drives the glow halo)
-  return [
-    { name: 'Sol',      temperature: 5800, manualRadius: false, color: [255, 248, 220] },
-    { name: 'Mercury',  temperature: 440,  manualRadius: false, color: [172, 157, 145] },
-    { name: 'Venus',    temperature: 737,  manualRadius: false, color: [228, 198, 104] },
-    { name: 'Earth',    temperature: 288,  manualRadius: false, color: [ 72, 140, 195] },
-    { name: 'Moon',     temperature: 250,  manualRadius: false, color: [175, 175, 178] },
-    { name: 'Mars',     temperature: 210,  manualRadius: false, color: [195,  88,  50] },
-    { name: 'Jupiter',  temperature: 120,  manualRadius: false, color: [195, 162, 110] },
-    { name: 'Io',       temperature: 130,  manualRadius: false, color: [224, 194,  60] },
-    { name: 'Ganymede', temperature: 110,  manualRadius: false, color: [142, 144, 148] },
-    { name: 'Saturn',   temperature: 134,  manualRadius: false, color: [228, 208, 152] },
-    { name: 'Titan',    temperature:  94,  manualRadius: false, color: [208, 152,  80] },
-    { name: 'Uranus',   temperature:  76,  manualRadius: false, color: [148, 208, 215] },
-    { name: 'Neptune',  temperature:  72,  manualRadius: false, color: [ 80, 108, 205] },
-  ];
-}
+import type { ContextMenuItem } from './contextMenu';
+import { ContextMenu, SpawnWizard } from './contextMenu';
+import { makeInitialBodies, makeInitialBodyStates } from './scenario';
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
@@ -187,6 +90,7 @@ async function init(): Promise<void> {
     gasExchange: false, // off at start — toggle via toolbar
   };
   let selectedBodyIndex: number = -1;
+  let followBodyIndex:   number = -1;
   let lagrangePoints: [number, number][] | null = null;
   let orbitPaths: [number, number][][] = [];
   let attractors: number[] = [];
@@ -224,26 +128,17 @@ async function init(): Promise<void> {
     onMassChange: (idx, mass) => {
       const bodies = physics.cpuBodies.slice();
       if (idx < bodies.length) {
-        const newRadius = bodyStates[idx]?.manualRadius
-          ? bodies[idx].radius
-          : bodyRadius(mass);
-        bodies[idx] = { ...bodies[idx], mass, radius: newRadius };
-        physics.setBodies(bodies);
-        if (idx < bodyStates.length && !bodyStates[idx].manualRadius) {
-          bodyStates[idx] = { ...bodyStates[idx] };
-        }
-        sidebar.updateBody(bodies[idx], bodyStates[idx]);
-      }
-    },
-    onRadiusChange: (idx, radius, manual) => {
-      const bodies = physics.cpuBodies.slice();
-      if (idx < bodies.length) {
-        bodies[idx] = { ...bodies[idx], radius };
+        bodies[idx] = { ...bodies[idx], mass, radius: bodyRadius(mass) };
         physics.setBodies(bodies);
         if (idx < bodyStates.length) {
-          bodyStates[idx] = { ...bodyStates[idx], manualRadius: manual };
+          bodyStates[idx] = { ...bodyStates[idx] };
         }
-        sidebar.updateBody(bodies[idx], bodyStates[idx]);
+        sidebar.updateBodyImmediate(bodies[idx], bodyStates[idx]);
+      }
+    },
+    onVisRadiusMultChange: (idx, mult) => {
+      if (idx < bodyStates.length) {
+        bodyStates[idx] = { ...bodyStates[idx], visRadiusMult: mult };
       }
     },
     onVelocityChange: (idx, vel) => {
@@ -251,6 +146,7 @@ async function init(): Promise<void> {
       if (idx < bodies.length) {
         bodies[idx] = { ...bodies[idx], vel };
         physics.setBodies(bodies);
+        sidebar.suppressPhysicsUpdates(3);
       }
     },
     onTempChange: (idx, temp) => {
@@ -268,6 +164,11 @@ async function init(): Promise<void> {
       input.velocityDragMode = true;
     },
   });
+
+  // ── Context menu & spawn wizard ───────────────────────────────────────────
+
+  const contextMenu = new ContextMenu();
+  const spawnWizard = new SpawnWizard();
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -393,7 +294,93 @@ async function init(): Promise<void> {
       selectedBodyIndex--;
       input.selectedBodyIndex = selectedBodyIndex;
     }
+    if (followBodyIndex === index) {
+      followBodyIndex = -1;
+    } else if (followBodyIndex > index) {
+      followBodyIndex--;
+    }
     recomputeOrbitPaths();
+  };
+
+  input.onContextMenu = (worldPos, bodyIndex, cssX, cssY): void => {
+    const items: ContextMenuItem[] = [];
+
+    if (bodyIndex >= 0 && bodyIndex < bodyStates.length) {
+      const name = bodyStates[bodyIndex].name;
+      items.push({ label: name.toUpperCase(), header: true });
+      items.push({
+        label: 'Select',
+        action: () => {
+          const bodies = physics.cpuBodies;
+          if (bodyIndex < bodies.length) {
+            selectedBodyIndex = bodyIndex;
+            input.selectedBodyIndex = bodyIndex;
+            sidebar.open(bodyIndex, bodies[bodyIndex], bodyStates[bodyIndex]);
+            recomputeLagrange();
+          }
+        },
+      });
+      items.push({
+        label: 'Delete',
+        action: () => input.onDeleteBody(bodyIndex),
+      });
+      items.push({ separator: true });
+    }
+
+    items.push({
+      label: 'Spawn Body Here…',
+      action: () => {
+        spawnWizard.show(worldPos, physics.cpuBodies, (result) => {
+          if (physics.N >= MAX_BODIES) return;
+          const body: BodyData = {
+            pos: result.pos,
+            vel: result.vel,
+            mass: result.mass,
+            radius: bodyRadius(result.mass),
+          };
+          const bodies = [...physics.cpuBodies, body];
+          physics.setBodies(bodies);
+          renderer.setBodyCount(bodies.length);
+          bodyStates.push({
+            name: result.name,
+            temperature: result.temperature,
+            manualRadius: false,
+            color: defaultColor(result.mass),
+          });
+          recomputeOrbitPaths();
+        });
+      },
+    });
+
+    items.push({
+      label: 'Center View Here',
+      action: () => {
+        camera.center[0] = worldPos[0];
+        camera.center[1] = worldPos[1];
+      },
+    });
+
+    items.push({ separator: true });
+
+    items.push({
+      label: paused ? 'Resume Simulation' : 'Pause Simulation',
+      action: () => { paused = !paused; },
+    });
+
+    items.push({
+      label: 'Reset',
+      action: () => input.onReset(),
+    });
+
+    contextMenu.show(cssX, cssY, items);
+  };
+
+  input.onFollow = (index: number): void => {
+    followBodyIndex = followBodyIndex === index ? -1 : index;
+  };
+
+  input.onEscape = (): void => {
+    followBodyIndex = -1;
   };
 
   input.onReset = (): void => {
@@ -404,6 +391,7 @@ async function init(): Promise<void> {
     bodyStates = makeInitialBodyStates();
     timeScale = 1.0;
     selectedBodyIndex = -1;
+    followBodyIndex   = -1;
     input.selectedBodyIndex = -1;
     sidebar.close();
     lagrangePoints = null;
@@ -459,12 +447,17 @@ async function init(): Promise<void> {
       (bi.mass * bi.vel[0] + bj.mass * bj.vel[0]) / newMass,
       (bi.mass * bi.vel[1] + bj.mass * bj.vel[1]) / newMass,
     ];
-    bodies[i] = { ...bi, mass: newMass, radius: bodyRadius(newMass), vel: newVel };
+    // Surviving index is always i (lower), but position belongs to the heavier body
+    const newPos: [number, number] = bj.mass > bi.mass
+      ? [bj.pos[0], bj.pos[1]]
+      : [bi.pos[0], bi.pos[1]];
+    bodies[i] = { pos: newPos, vel: newVel, mass: newMass, radius: bodyRadius(newMass) };
     bodies.splice(j, 1);
     renderer.removeBodyTrail(j);
     renderer.removeBodySprite(j);
     physics.setBodies(bodies);
     renderer.setBodyCount(bodies.length);
+    renderer.addSplat(newPos, newMass, defaultColor(newMass));
     renderer.addPulse(i);
     input.hoveredIndex = -1;
 
@@ -493,6 +486,13 @@ async function init(): Promise<void> {
     } else if (selectedBodyIndex > j) {
       selectedBodyIndex--;
       input.selectedBodyIndex = selectedBodyIndex;
+    }
+
+    // Adjust follow index
+    if (followBodyIndex === j) {
+      followBodyIndex = i;
+    } else if (followBodyIndex > j) {
+      followBodyIndex--;
     }
 
     recomputeLagrange();
@@ -533,10 +533,6 @@ async function init(): Promise<void> {
       lastBodyBuffer = physics.tick(dt);
 
       physics.scheduleCpuRead((_bodies: BodyData[]) => {
-        // cpuBodies is updated inside scheduleCpuRead; collision checks are
-        // handled by PhysicsEngine itself (calls onMerge as needed).
-
-        // Update sidebar if open
         if (sidebar.isOpen && selectedBodyIndex >= 0 && selectedBodyIndex < physics.cpuBodies.length) {
           sidebar.updateBody(physics.cpuBodies[selectedBodyIndex], bodyStates[selectedBodyIndex]);
         }
@@ -550,6 +546,13 @@ async function init(): Promise<void> {
       }
 
       stepOnce = false;
+    }
+
+    // Camera follow — lock to followed body position
+    if (followBodyIndex >= 0 && followBodyIndex < physics.cpuBodies.length) {
+      const fb = physics.cpuBodies[followBodyIndex];
+      camera.center[0] = fb.pos[0];
+      camera.center[1] = fb.pos[1];
     }
 
     renderer.render(
@@ -568,6 +571,7 @@ async function init(): Promise<void> {
       lagrangePoints,
       orbitPaths,
       attractors,
+      followBodyIndex,
     );
 
     requestAnimationFrame(frame);

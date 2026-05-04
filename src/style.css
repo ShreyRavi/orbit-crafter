@@ -299,6 +299,34 @@ body {
   letter-spacing: 0.05em;
 }
 
+.sb-slider-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.sb-type-badge {
+  font-size: 10px;
+  color: rgba(255,200,80,0.80);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sb-slider-readout {
+  text-align: right;
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+  margin-top: -2px;
+  margin-bottom: 2px;
+}
+
+.sb-size-val {
+  font-size: 10px;
+  color: rgba(255,255,255,0.50);
+  letter-spacing: 0.02em;
+}
+
 .sb-value {
   color: rgba(255,255,255,0.85);
   font-size: 11px;
@@ -384,3 +412,289 @@ body {
   border-top: 1px solid rgba(255,80,40,0.25);
   letter-spacing: 0.04em;
 }
+
+/* ── Context Menu ────────────────────────────────────────────────────────── */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 160px;
+  background: rgba(4,8,18,0.97);
+  border: 1px solid rgba(255,140,0,0.35);
+  border-radius: 3px;
+  backdrop-filter: blur(16px);
+  padding: 3px 0;
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.60);
+  display: none;
+}
+
+.ctx-menu.ctx-visible { display: block; }
+
+.ctx-header {
+  padding: 4px 12px 3px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255,140,0,0.70);
+  user-select: none;
+  border-bottom: 1px solid rgba(255,140,0,0.15);
+  margin-bottom: 2px;
+}
+
+.ctx-item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 6px 14px;
+  text-align: left;
+  color: rgba(255,255,255,0.80);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: background 0.08s, color 0.08s;
+}
+
+.ctx-item:hover {
+  background: rgba(255,140,0,0.10);
+  color: rgba(255,200,80,0.95);
+}
+
+.ctx-sep {
+  height: 1px;
+  background: rgba(255,140,0,0.15);
+  margin: 3px 8px;
+}
+
+/* ── Spawn Wizard ────────────────────────────────────────────────────────── */
+.wz-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2,5,14,0.70);
+  backdrop-filter: blur(4px);
+}
+
+.wz-overlay.wz-open { display: flex; }
+
+.wz-card {
+  background: rgba(4,8,18,0.98);
+  border: 1px solid rgba(255,140,0,0.40);
+  border-radius: 5px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  font-family: 'Geist Mono', monospace;
+  font-size: 12px;
+  color: rgba(255,255,255,0.85);
+  box-shadow: 0 16px 64px rgba(0,0,0,0.80);
+}
+
+.wz-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255,140,0,0.20);
+  background: rgba(255,140,0,0.04);
+}
+
+.wz-title {
+  font-size: 13px;
+  font-weight: bold;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: rgba(255,200,80,0.95);
+}
+
+.wz-x {
+  background: transparent;
+  border: 1px solid rgba(255,80,60,0.35);
+  border-radius: 2px;
+  color: rgba(255,80,60,0.60);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 7px;
+}
+.wz-x:hover { background: rgba(255,80,60,0.12); color: rgba(255,100,80,0.90); }
+
+.wz-presets {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,140,0,0.12);
+}
+
+.wz-preset {
+  flex: 1;
+  background: rgba(255,140,0,0.04);
+  border: 1px solid rgba(255,140,0,0.22);
+  border-radius: 2px;
+  color: rgba(255,255,255,0.55);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 5px 0;
+  transition: background 0.10s, border-color 0.10s, color 0.10s;
+}
+.wz-preset:hover {
+  border-color: rgba(255,140,0,0.50);
+  color: rgba(255,185,60,0.90);
+  background: rgba(255,140,0,0.08);
+}
+.wz-preset.active {
+  border-color: rgba(255,140,0,0.75);
+  background: rgba(255,140,0,0.15);
+  color: rgba(255,200,80,0.95);
+}
+
+.wz-preview-strip {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid rgba(255,140,0,0.12);
+  background: rgba(0,0,0,0.25);
+}
+
+.wz-preview {
+  border-radius: 4px;
+  background: rgba(0,0,0,0.40);
+  border: 1px solid rgba(255,140,0,0.15);
+  display: block;
+}
+
+.wz-fields {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-bottom: 1px solid rgba(255,140,0,0.12);
+}
+
+.wz-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 1px;
+}
+
+.wz-lbl {
+  color: rgba(255,140,0,0.60);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+  min-width: 60px;
+}
+
+.wz-dim {
+  font-size: 10px;
+  color: rgba(255,200,80,0.60);
+  letter-spacing: 0.04em;
+}
+
+.wz-mass-val {
+  font-size: 11px;
+  color: rgba(255,255,255,0.90);
+  margin-left: auto;
+}
+
+.wz-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,140,0,0.30);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.wz-range {
+  display: block;
+  width: 100%;
+  margin: 3px 0 5px;
+  accent-color: rgba(255,140,0,0.90);
+}
+
+.wz-input {
+  background: rgba(255,140,0,0.06);
+  border: 1px solid rgba(255,140,0,0.22);
+  border-radius: 2px;
+  color: rgba(255,255,255,0.90);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 7px;
+  outline: none;
+  transition: border-color 0.10s;
+}
+.wz-input:focus { border-color: rgba(255,140,0,0.65); }
+.wz-name { flex: 1; }
+
+.wz-circ {
+  margin-left: auto;
+  background: rgba(80,160,255,0.08);
+  border: 1px solid rgba(80,160,255,0.35);
+  border-radius: 2px;
+  color: rgba(120,190,255,0.80);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.wz-circ:hover {
+  background: rgba(80,160,255,0.16);
+  color: rgba(140,210,255,0.95);
+}
+
+.wz-vrow {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+}
+.wz-vrow .wz-input { flex: 1; }
+
+.wz-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+.wz-cancel {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 2px;
+  color: rgba(255,255,255,0.50);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding: 6px 16px;
+}
+.wz-cancel:hover { border-color: rgba(255,255,255,0.35); color: rgba(255,255,255,0.75); }
+
+.wz-spawn {
+  background: rgba(255,140,0,0.12);
+  border: 1px solid rgba(255,140,0,0.55);
+  border-radius: 2px;
+  color: rgba(255,200,80,0.95);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 18px;
+  transition: background 0.10s;
+}
+.wz-spawn:hover { background: rgba(255,140,0,0.22); }

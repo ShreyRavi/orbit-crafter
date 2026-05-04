@@ -15,6 +15,7 @@ import {
   type Camera,
 } from '../constants';
 import { defaultColor, temperatureToColor } from '../bodyState';
+import { makeInitialBodies } from '../scenario';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -270,6 +271,37 @@ describe('temperatureToColor', () => {
   test('clamps temp above 40000 to 40000', () => {
     expect(temperatureToColor(99999)).toEqual(temperatureToColor(40000));
   });
+});
+
+describe('Solar system stability', () => {
+  test('all bodies remain bound after 14400 substeps (~1 simulated minute)', () => {
+    const bodies = makeInitialBodies();
+    const dtSub  = DT / SUBSTEP_COUNT; // 0.016 / 4 = 0.004
+
+    // Neptune is the last body; record its perihelion distance as the system radius
+    const neptune = bodies[bodies.length - 1];
+    const neptuneR = Math.hypot(
+      neptune.pos[0] - bodies[0].pos[0],
+      neptune.pos[1] - bodies[0].pos[1],
+    );
+    const bound = neptuneR * 3; // anything within 3× Neptune orbit is still "in system"
+
+    // 3600 frames × 4 substeps = 14400
+    for (let s = 0; s < 14400; s++) {
+      leapfrogStep(bodies, dtSub);
+    }
+
+    for (let i = 1; i < bodies.length; i++) {
+      const dx = bodies[i].pos[0] - bodies[0].pos[0];
+      const dy = bodies[i].pos[1] - bodies[0].pos[1];
+      const r  = Math.hypot(dx, dy);
+      expect(r).toBeLessThan(bound);
+    }
+
+    // Sol should not drift far from origin (momentum conservation)
+    expect(Math.abs(bodies[0].pos[0])).toBeLessThan(500);
+    expect(Math.abs(bodies[0].pos[1])).toBeLessThan(500);
+  }, 30_000); // generous timeout — runs ~200 ms in practice
 });
 
 describe('N=1 delete guard', () => {

@@ -69,6 +69,9 @@ export class InputHandler {
   onDragStart: (index: number) => void = () => {};
   onSelectBody: (index: number) => void = () => {};
   onVelocityDrag: (index: number, vel: [number, number]) => void = () => {};
+  onContextMenu: (worldPos: [number, number], bodyIndex: number, cssX: number, cssY: number) => void = () => {};
+  onFollow:  (index: number) => void = () => {};
+  onEscape:  () => void = () => {};
 
   // ── Private ──────────────────────────────────────────────────────────────────
   private canvas: HTMLCanvasElement;
@@ -94,6 +97,8 @@ export class InputHandler {
   private _onTouchStart: (e: TouchEvent) => void;
   private _onTouchMove: (e: TouchEvent) => void;
   private _onTouchEnd: (e: TouchEvent) => void;
+  private _onContextMenu: (e: MouseEvent) => void;
+  private _onDblClick: (e: MouseEvent) => void;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -109,29 +114,35 @@ export class InputHandler {
     this._onMouseUp   = this._handleMouseUp.bind(this);
     this._onWheel     = this._handleWheel.bind(this);
     this._onKeyDown   = this._handleKeyDown.bind(this);
-    this._onTouchStart = this._handleTouchStart.bind(this);
-    this._onTouchMove  = this._handleTouchMove.bind(this);
-    this._onTouchEnd   = this._handleTouchEnd.bind(this);
+    this._onTouchStart   = this._handleTouchStart.bind(this);
+    this._onTouchMove    = this._handleTouchMove.bind(this);
+    this._onTouchEnd     = this._handleTouchEnd.bind(this);
+    this._onContextMenu  = this._handleContextMenu.bind(this);
+    this._onDblClick     = this._handleDblClick.bind(this);
 
-    canvas.addEventListener('mousemove', this._onMouseMove);
-    canvas.addEventListener('mousedown', this._onMouseDown);
-    canvas.addEventListener('mouseup',   this._onMouseUp);
-    canvas.addEventListener('wheel',     this._onWheel, { passive: false });
-    window.addEventListener('keydown',   this._onKeyDown);
-    canvas.addEventListener('touchstart', this._onTouchStart, { passive: false });
-    canvas.addEventListener('touchmove',  this._onTouchMove,  { passive: false });
-    canvas.addEventListener('touchend',   this._onTouchEnd,   { passive: false });
+    canvas.addEventListener('mousemove',    this._onMouseMove);
+    canvas.addEventListener('mousedown',    this._onMouseDown);
+    canvas.addEventListener('mouseup',      this._onMouseUp);
+    canvas.addEventListener('wheel',        this._onWheel, { passive: false });
+    canvas.addEventListener('contextmenu',  this._onContextMenu);
+    canvas.addEventListener('dblclick',     this._onDblClick);
+    window.addEventListener('keydown',      this._onKeyDown);
+    canvas.addEventListener('touchstart',   this._onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove',    this._onTouchMove,  { passive: false });
+    canvas.addEventListener('touchend',     this._onTouchEnd,   { passive: false });
   }
 
   destroy(): void {
-    this.canvas.removeEventListener('mousemove', this._onMouseMove);
-    this.canvas.removeEventListener('mousedown', this._onMouseDown);
-    this.canvas.removeEventListener('mouseup',   this._onMouseUp);
-    this.canvas.removeEventListener('wheel',     this._onWheel);
-    window.removeEventListener('keydown',        this._onKeyDown);
-    this.canvas.removeEventListener('touchstart', this._onTouchStart);
-    this.canvas.removeEventListener('touchmove',  this._onTouchMove);
-    this.canvas.removeEventListener('touchend',   this._onTouchEnd);
+    this.canvas.removeEventListener('mousemove',   this._onMouseMove);
+    this.canvas.removeEventListener('mousedown',   this._onMouseDown);
+    this.canvas.removeEventListener('mouseup',     this._onMouseUp);
+    this.canvas.removeEventListener('wheel',       this._onWheel);
+    this.canvas.removeEventListener('contextmenu', this._onContextMenu);
+    this.canvas.removeEventListener('dblclick',    this._onDblClick);
+    window.removeEventListener('keydown',          this._onKeyDown);
+    this.canvas.removeEventListener('touchstart',  this._onTouchStart);
+    this.canvas.removeEventListener('touchmove',   this._onTouchMove);
+    this.canvas.removeEventListener('touchend',    this._onTouchEnd);
   }
 
   // ── Private: coordinate helpers ───────────────────────────────────────────
@@ -319,11 +330,16 @@ export class InputHandler {
       case '-':
         this.onTimeScaleDown();
         break;
+      case 'f':
+      case 'F':
+        if (this.selectedBodyIndex >= 0) this.onFollow(this.selectedBodyIndex);
+        break;
       case 'Escape':
         this.ghostBody   = null;
         this.placingBody = false;
         this.velocityDragMode = false;
         this._velDragStart = null;
+        this.onEscape();
         break;
       // ── Pan ──────────────────────────────────────────────────────────────
       case 'w':
@@ -342,6 +358,25 @@ export class InputHandler {
       case 'D':
         camera.center[0] += this.PAN_STEP / camera.scale;
         break;
+    }
+  }
+
+  // ── Private: context menu & double-click ─────────────────────────────────
+
+  private _handleContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    const world = this._cssToWorld(e.clientX, e.clientY);
+    const hit   = hitTest(world, this.getBodies(), this.getCamera());
+    this.onContextMenu(world, hit, e.clientX, e.clientY);
+  }
+
+  private _handleDblClick(e: MouseEvent): void {
+    const world = this._cssToWorld(e.clientX, e.clientY);
+    const hit   = hitTest(world, this.getBodies(), this.getCamera());
+    if (hit >= 0) {
+      this.selectedBodyIndex = hit;
+      this.onSelectBody(hit);
+      this.onFollow(hit);
     }
   }
 

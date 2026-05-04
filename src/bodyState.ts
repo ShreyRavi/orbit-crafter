@@ -5,6 +5,7 @@ export interface BodyState {
   temperature: number;              // Kelvin, blackbody color
   manualRadius: boolean;            // if true, don't auto-update radius from mass
   color: [number, number, number];  // [r, g, b] solid disc color
+  visRadiusMult?: number;           // visual size multiplier (1.0 = auto)
 }
 
 export function generateName(mass: number, existingStates: BodyState[]): string {

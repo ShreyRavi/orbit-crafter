@@ -1,16 +1,16 @@
 import type { BodyData } from './constants';
 import type { BodyState } from './bodyState';
 import { temperatureToColor, isBlackHole, schwarzschildRadius } from './bodyState';
-import { STAR_MASS, PLANET_MASS } from './constants';
+import { STAR_MASS } from './constants';
 
 export interface SidebarCallbacks {
   onNameChange: (idx: number, name: string) => void;
   onMassChange: (idx: number, mass: number) => void;
-  onRadiusChange: (idx: number, radius: number, manual: boolean) => void;
+  onVisRadiusMultChange: (idx: number, mult: number) => void;
   onVelocityChange: (idx: number, vel: [number, number]) => void;
   onTempChange: (idx: number, temp: number) => void;
   onClose: () => void;
-  onStartVelocityDrag: () => void;  // activates viewport velocity-drag mode
+  onStartVelocityDrag: () => void;
 }
 
 export class Sidebar {
@@ -23,11 +23,11 @@ export class Sidebar {
   private el: HTMLElement;
   private nameInput!: HTMLInputElement;
   private previewCanvas!: HTMLCanvasElement;
-  private massInput!: HTMLInputElement;
-  private typeLabel!: HTMLElement;
-  private radiusInput!: HTMLInputElement;
-  private volumeVal!: HTMLElement;
-  private densityVal!: HTMLElement;
+  private massSlider!: HTMLInputElement;
+  private typeBadgeEl!: HTMLElement;
+  private massValEl!: HTMLElement;
+  private sizeSlider!: HTMLInputElement;
+  private sizeValEl!: HTMLElement;
   private velDial!: HTMLCanvasElement;
   private vxInput!: HTMLInputElement;
   private vyInput!: HTMLInputElement;
@@ -40,6 +40,11 @@ export class Sidebar {
   private _currentVel: [number, number] = [0, 0];
   private _boundDialMove!: (e: MouseEvent) => void;
   private _boundDialUp!: () => void;
+
+  // Input focus tracking — prevents physics readbacks from overwriting in-progress edits
+  private _focusedInputs = new Set<HTMLInputElement>();
+  // Suppress counter — blocks stale GPU readback updates for N calls after a user commit
+  private _suppressCount = 0;
 
   constructor(container: HTMLElement, callbacks: SidebarCallbacks) {
     this.callbacks = callbacks;
@@ -59,23 +64,21 @@ export class Sidebar {
       </div>
       <div class="sb-section">
         <div class="sb-section-title">Physical</div>
-        <div class="sb-row">
+
+        <div class="sb-slider-header">
           <span class="sb-label">Mass</span>
-          <span class="sb-type-label sb-value"></span>
-          <input class="sb-input sb-mass-input" type="number" step="any" />
+          <span class="sb-type-badge"></span>
         </div>
-        <div class="sb-row">
-          <span class="sb-label">Radius</span>
-          <input class="sb-input sb-radius-input" type="number" step="any" min="1" />
+        <input class="sb-range sb-mass-slider" type="range" min="0" max="7.3" step="0.02" />
+        <div class="sb-slider-readout">
+          <span class="sb-mass-val"></span>
         </div>
-        <div class="sb-row">
-          <span class="sb-label">Volume</span>
-          <span class="sb-value sb-vol-val"></span>
+
+        <div class="sb-slider-header" style="margin-top:10px">
+          <span class="sb-label">Size</span>
+          <span class="sb-size-val">1.0×</span>
         </div>
-        <div class="sb-row">
-          <span class="sb-label">Density</span>
-          <span class="sb-value sb-den-val"></span>
-        </div>
+        <input class="sb-range sb-size-slider" type="range" min="0.2" max="5" step="0.05" />
       </div>
       <div class="sb-section">
         <div class="sb-section-title">Motion</div>
@@ -97,51 +100,65 @@ export class Sidebar {
     `;
 
     // Grab references
-    this.nameInput = this.el.querySelector('.sb-name')!;
+    this.nameInput    = this.el.querySelector('.sb-name')!;
     this.previewCanvas = this.el.querySelector('.sb-preview-canvas')!;
-    this.massInput = this.el.querySelector('.sb-mass-input')!;
-    this.typeLabel = this.el.querySelector('.sb-type-label')!;
-    this.radiusInput = this.el.querySelector('.sb-radius-input')!;
-    this.volumeVal = this.el.querySelector('.sb-vol-val')!;
-    this.densityVal = this.el.querySelector('.sb-den-val')!;
-    this.velDial = this.el.querySelector('.sb-vel-dial')!;
-    this.vxInput = this.el.querySelector('.sb-vx-input')!;
-    this.vyInput = this.el.querySelector('.sb-vy-input')!;
-    this.tempRange = this.el.querySelector('.sb-temp-range')!;
-    this.colorSwatch = this.el.querySelector('.sb-color-swatch')!;
-    this.bhWarning = this.el.querySelector('.sb-bh-warning')!;
+    this.massSlider   = this.el.querySelector('.sb-mass-slider')!;
+    this.typeBadgeEl  = this.el.querySelector('.sb-type-badge')!;
+    this.massValEl    = this.el.querySelector('.sb-mass-val')!;
+    this.sizeSlider   = this.el.querySelector('.sb-size-slider')!;
+    this.sizeValEl    = this.el.querySelector('.sb-size-val')!;
+    this.velDial      = this.el.querySelector('.sb-vel-dial')!;
+    this.vxInput      = this.el.querySelector('.sb-vx-input')!;
+    this.vyInput      = this.el.querySelector('.sb-vy-input')!;
+    this.tempRange    = this.el.querySelector('.sb-temp-range')!;
+    this.colorSwatch  = this.el.querySelector('.sb-color-swatch')!;
+    this.bhWarning    = this.el.querySelector('.sb-bh-warning')!;
 
-    // Helper: fire on blur OR Enter key
+    // Track which inputs are currently focused to block physics readback overwrites
+    const trackFocus = (el: HTMLInputElement) => {
+      el.addEventListener('focus', () => this._focusedInputs.add(el));
+      el.addEventListener('blur',  () => this._focusedInputs.delete(el));
+    };
+    trackFocus(this.nameInput);
+    trackFocus(this.massSlider);
+    trackFocus(this.sizeSlider);
+    trackFocus(this.vxInput);
+    trackFocus(this.vyInput);
+    trackFocus(this.tempRange);
+
+    // Helper: fire on blur OR Enter key; suppress stale GPU readbacks
     const onCommit = (input: HTMLInputElement, fn: () => void) => {
-      input.addEventListener('change', fn);
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { fn(); input.blur(); } });
+      const go = () => { this._suppressCount = 3; fn(); };
+      input.addEventListener('change', go);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { go(); input.blur(); } });
     };
 
-    // Event listeners
+    // Name
     const closeBtn = this.el.querySelector('.sb-close')!;
     closeBtn.addEventListener('click', () => this.callbacks.onClose());
-
     onCommit(this.nameInput, () => {
       if (this.currentIdx < 0) return;
       this.callbacks.onNameChange(this.currentIdx, this.nameInput.value);
     });
 
-    onCommit(this.massInput, () => {
+    // Mass slider — live updates
+    this.massSlider.addEventListener('input', () => {
       if (this.currentIdx < 0) return;
-      const mass = parseFloat(this.massInput.value);
-      if (isFinite(mass) && mass > 0) {
-        this.callbacks.onMassChange(this.currentIdx, mass);
-      }
+      const mass = Math.pow(10, parseFloat(this.massSlider.value));
+      this.massValEl.textContent  = this._formatMass(mass);
+      this.typeBadgeEl.textContent = this._massTypeLabel(mass);
+      this.callbacks.onMassChange(this.currentIdx, mass);
     });
 
-    onCommit(this.radiusInput, () => {
+    // Size slider — live updates
+    this.sizeSlider.addEventListener('input', () => {
       if (this.currentIdx < 0) return;
-      const r = parseFloat(this.radiusInput.value);
-      if (isFinite(r) && r > 0) {
-        this.callbacks.onRadiusChange(this.currentIdx, r, true);
-      }
+      const mult = parseFloat(this.sizeSlider.value);
+      this.sizeValEl.textContent = this._formatMult(mult);
+      this.callbacks.onVisRadiusMultChange(this.currentIdx, mult);
     });
 
+    // Velocity
     const commitVelocity = () => {
       if (this.currentIdx < 0) return;
       const vx = parseFloat(this.vxInput.value);
@@ -157,6 +174,7 @@ export class Sidebar {
 
     this.tempRange.addEventListener('input', () => {
       if (this.currentIdx < 0) return;
+      this._suppressCount = 3;
       const temp = parseInt(this.tempRange.value, 10);
       this._updateColorSwatch(temp);
       this.callbacks.onTempChange(this.currentIdx, temp);
@@ -165,7 +183,7 @@ export class Sidebar {
     const velDragBtn = this.el.querySelector('.sb-vel-drag-btn')!;
     velDragBtn.addEventListener('click', () => this.callbacks.onStartVelocityDrag());
 
-    // Velocity dial mouse events
+    // Velocity dial
     this._boundDialMove = (e: MouseEvent) => this._dialMove(e);
     this._boundDialUp   = () => { this._dialDragging = false; };
     this.velDial.addEventListener('mousedown', (e) => this._dialStart(e));
@@ -174,6 +192,29 @@ export class Sidebar {
 
     this._drawDial();
   }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  private _massTypeLabel(mass: number): string {
+    if (mass >= 0.5 * STAR_MASS) return 'Star';
+    if (mass >= 50000) return 'Giant';
+    if (mass >= 1000) return 'Planet';
+    if (mass >= 10) return 'Moon';
+    return 'Dust';
+  }
+
+  private _formatMass(mass: number): string {
+    if (mass >= 1e6) return `${(mass / 1e6).toFixed(1)}M`;
+    if (mass >= 1000) return `${(mass / 1000).toFixed(1)}k`;
+    return mass.toFixed(0);
+  }
+
+  private _formatMult(mult: number): string {
+    const v = mult.toFixed(2);
+    return mult === 1 || Math.abs(mult - 1) < 0.03 ? '1.0× (auto)' : `${v}×`;
+  }
+
+  // ── Dial ───────────────────────────────────────────────────────────────────
 
   private _dialStart(e: MouseEvent): void {
     this._dialDragging = true;
@@ -192,7 +233,6 @@ export class Sidebar {
     const dx = e.clientX - cx;
     const dy = e.clientY - cy;
     const maxR = rect.width / 2;
-    // Map to velocity: full radius = speed of ~100 units
     const scale = 100 / maxR;
     const vx = dx * scale;
     const vy = dy * scale;
@@ -216,8 +256,6 @@ export class Sidebar {
     const maxR = Math.min(cx, cy) - 2;
 
     ctx.clearRect(0, 0, W, H);
-
-    // Background circle
     ctx.beginPath();
     ctx.arc(cx, cy, maxR, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255,255,255,0.04)';
@@ -226,16 +264,12 @@ export class Sidebar {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Crosshairs
     ctx.strokeStyle = 'rgba(255,255,255,0.10)';
     ctx.beginPath();
-    ctx.moveTo(cx, cy - maxR);
-    ctx.lineTo(cx, cy + maxR);
-    ctx.moveTo(cx - maxR, cy);
-    ctx.lineTo(cx + maxR, cy);
+    ctx.moveTo(cx, cy - maxR); ctx.lineTo(cx, cy + maxR);
+    ctx.moveTo(cx - maxR, cy); ctx.lineTo(cx + maxR, cy);
     ctx.stroke();
 
-    // Velocity dot
     const [vx, vy] = this._currentVel;
     const speed = Math.sqrt(vx * vx + vy * vy);
     const scale = maxR / 100;
@@ -243,7 +277,6 @@ export class Sidebar {
     const dotY = cy + vy * scale;
 
     if (speed > 0.01) {
-      // Arrow line
       ctx.strokeStyle = 'rgba(120,200,255,0.70)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -252,14 +285,11 @@ export class Sidebar {
       ctx.stroke();
     }
 
-    // Dot
     ctx.beginPath();
     ctx.arc(
       Math.max(cx - maxR, Math.min(cx + maxR, dotX)),
       Math.max(cy - maxR, Math.min(cy + maxR, dotY)),
-      4,
-      0,
-      Math.PI * 2,
+      4, 0, Math.PI * 2,
     );
     ctx.fillStyle = 'rgba(120,200,255,0.90)';
     ctx.fill();
@@ -270,7 +300,7 @@ export class Sidebar {
     this.colorSwatch.style.backgroundColor = `rgb(${rgb})`;
   }
 
-  private _drawPreview(temp: number, mass?: number): void {
+  private _drawPreview(temp: number, mass?: number, mult = 1): void {
     const canvas = this.previewCanvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -280,19 +310,18 @@ export class Sidebar {
     ctx.clearRect(0, 0, W, H);
 
     const rgb = temperatureToColor(temp);
-    const r   = mass ? Math.min(28, Math.max(9, Math.sqrt(mass) * 0.9)) : 22;
+    const baseR = mass ? Math.min(28, Math.max(9, Math.sqrt(mass) * 0.9)) : 22;
+    const r     = Math.min(32, baseR * Math.max(0.2, Math.min(mult, 3.5)));
 
-    // Subtle corona — only just outside the solid body
     const glow = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.7);
     glow.addColorStop(0,   `rgba(${rgb},0.30)`);
     glow.addColorStop(0.5, `rgba(${rgb},0.08)`);
     glow.addColorStop(1,   `rgba(${rgb},0)`);
     ctx.beginPath();
-    ctx.arc(cx, cy, r * 1.7, 0, Math.PI * 2);
+    ctx.arc(cx, cy, Math.min(r * 1.7, cx - 1), 0, Math.PI * 2);
     ctx.fillStyle = glow;
     ctx.fill();
 
-    // Solid body with limb darkening (off-centre highlight)
     const body = ctx.createRadialGradient(cx - r * 0.28, cy - r * 0.22, 0, cx, cy, r);
     body.addColorStop(0,    `rgba(255,255,255,0.10)`);
     body.addColorStop(0.15, `rgba(${rgb},1)`);
@@ -304,19 +333,7 @@ export class Sidebar {
     ctx.fill();
   }
 
-  private _massTypeLabel(mass: number): string {
-    if (mass > 0.1 * STAR_MASS) return 'Star';
-    if (mass > 0.1 * PLANET_MASS) return 'Planet';
-    return 'Moon';
-  }
-
-  private _formatSci(n: number): string {
-    if (n === 0) return '0';
-    const exp = Math.floor(Math.log10(Math.abs(n)));
-    const mant = n / Math.pow(10, exp);
-    if (Math.abs(exp) < 4) return n.toFixed(2);
-    return `${mant.toFixed(2)}e${exp}`;
-  }
+  // ── Open / close ───────────────────────────────────────────────────────────
 
   open(idx: number, body: BodyData, state: BodyState): void {
     this.currentIdx = idx;
@@ -331,42 +348,65 @@ export class Sidebar {
     this.el.classList.remove('open');
   }
 
+  suppressPhysicsUpdates(n: number): void {
+    this._suppressCount = Math.max(this._suppressCount, n);
+  }
+
+  // Called from scheduleCpuRead — skipped if suppress counter > 0 (stale GPU data)
   updateBody(body: BodyData, state: BodyState): void {
-    this.nameInput.value = state.name;
+    if (this._suppressCount > 0) {
+      this._suppressCount--;
+      return;
+    }
+    this._doUpdate(body, state);
+  }
+
+  // Called directly after a user commit — always applies and resets the suppress counter
+  updateBodyImmediate(body: BodyData, state: BodyState): void {
+    this._suppressCount = 3;
+    this._doUpdate(body, state);
+  }
+
+  private _doUpdate(body: BodyData, state: BodyState): void {
+    if (!this._focusedInputs.has(this.nameInput)) {
+      this.nameInput.value = state.name;
+    }
 
     const mass = body.mass;
-    const radius = body.radius;
+    const mult = state.visRadiusMult ?? 1;
 
-    this.massInput.value = this._formatSci(mass);
-    this.typeLabel.textContent = this._massTypeLabel(mass);
-    this.radiusInput.value = radius.toFixed(2);
+    if (!this._focusedInputs.has(this.massSlider)) {
+      this.massSlider.value       = String(Math.log10(Math.max(mass, 1)));
+      this.massValEl.textContent  = this._formatMass(mass);
+      this.typeBadgeEl.textContent = this._massTypeLabel(mass);
+    }
 
-    const volume = (4 / 3) * Math.PI * radius * radius * radius;
-    const density = volume > 0 ? mass / volume : 0;
-    this.volumeVal.textContent = this._formatSci(volume);
-    this.densityVal.textContent = this._formatSci(density);
+    if (!this._focusedInputs.has(this.sizeSlider)) {
+      this.sizeSlider.value      = String(mult);
+      this.sizeValEl.textContent = this._formatMult(mult);
+    }
 
-    // Velocity
-    this._currentVel = [body.vel[0], body.vel[1]];
-    this.vxInput.value = body.vel[0].toFixed(3);
-    this.vyInput.value = body.vel[1].toFixed(3);
-    this._drawDial();
+    if (!this._focusedInputs.has(this.vxInput) && !this._focusedInputs.has(this.vyInput) && !this._dialDragging) {
+      this._currentVel   = [body.vel[0], body.vel[1]];
+      this.vxInput.value = body.vel[0].toFixed(3);
+      this.vyInput.value = body.vel[1].toFixed(3);
+      this._drawDial();
+    }
 
-    // Temperature
-    this.tempRange.value = String(Math.round(state.temperature));
-    this._updateColorSwatch(state.temperature);
+    if (!this._focusedInputs.has(this.tempRange)) {
+      this.tempRange.value = String(Math.round(state.temperature));
+      this._updateColorSwatch(state.temperature);
+    }
 
-    // Preview
-    this._drawPreview(state.temperature, mass);
+    this._drawPreview(state.temperature, mass, mult);
 
-    // Schwarzschild
     const rSch = schwarzschildRadius(mass);
-    if (isBlackHole(mass, radius)) {
+    if (isBlackHole(mass, body.radius)) {
       this.bhWarning.style.display = '';
-      this.bhWarning.textContent = `⚠ Black hole! r_s = ${rSch.toFixed(2)}, body r = ${radius.toFixed(2)}`;
-    } else if (rSch > radius * 0.5) {
+      this.bhWarning.textContent = `⚠ Black hole! r_s = ${rSch.toFixed(2)}, body r = ${body.radius.toFixed(2)}`;
+    } else if (rSch > body.radius * 0.5) {
       this.bhWarning.style.display = '';
-      this.bhWarning.textContent = `r_s = ${rSch.toFixed(2)} (approaching body radius ${radius.toFixed(2)})`;
+      this.bhWarning.textContent = `r_s = ${rSch.toFixed(2)} (approaching body radius ${body.radius.toFixed(2)})`;
     } else {
       this.bhWarning.style.display = 'none';
     }
@@ -375,10 +415,10 @@ export class Sidebar {
   destroy(): void {
     window.removeEventListener('mousemove', this._boundDialMove);
     window.removeEventListener('mouseup',   this._boundDialUp);
+    this._focusedInputs.clear();
     this.el.innerHTML = '';
     this.el.classList.remove('open');
     this.isOpen = false;
     this.currentIdx = -1;
   }
 }
-

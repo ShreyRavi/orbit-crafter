@@ -1,6 +1,7 @@
 import type { BodyData, Camera } from './constants';
 import {
   TRAIL_BUFFER_LENGTH,
+  MAX_BODIES,
   worldToScreen,
 } from './constants';
 import type { BodyState } from './bodyState';
@@ -28,6 +29,7 @@ struct RenderUniforms {
 
 @group(0) @binding(0) var<storage, read> bodies: array<Body>;
 @group(0) @binding(1) var<uniform> uniforms: RenderUniforms;
+@group(0) @binding(2) var<storage, read> mults: array<f32>;
 
 struct VertOut {
   @builtin(position) pos: vec4f,
@@ -58,7 +60,9 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertO
   let screenPos = (body.pos - uniforms.cameraCenter) * uniforms.cameraScale + center;
   let uv = QUAD[vi];
   let logM = clamp(log(max(body.mass, 1.0)) / log(10.0), 0.5, 8.0);
-  let visR = max(4.0, (logM - 1.0) * 5.0 + 2.0) * uniforms.cameraScale;
+  let rawMult = mults[ii];
+  let mult = select(1.0, rawMult, rawMult > 0.0);
+  let visR = max(4.0, (logM - 1.0) * 5.0 + 2.0) * mult * uniforms.cameraScale;
   let glowR = visR * 4.0;
   let pixelPos = screenPos + uv * glowR;
   let clip = vec4f(
@@ -112,6 +116,24 @@ interface GasParticle {
   color: string;
 }
 
+interface SplatParticle {
+  vx: number;  // world units per ms
+  vy: number;
+  r: number;   // base radius in world units
+  color: string; // 'r,g,b'
+}
+
+interface SplatEffect {
+  wx: number;   // world-space origin
+  wy: number;
+  startTime: number;
+  duration: number;       // ms — particle lifetime
+  flashDuration: number;  // ms — central flash
+  particles: SplatParticle[];
+  ringColor: string;      // 'r,g,b'
+  flashRadius: number;    // world units — peak flash radius
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function lcg(seed: number): number {
@@ -126,9 +148,9 @@ function trailColor(mass: number): string {
 }
 
 /** Visual disc radius in screen pixels — decoupled from physics collision radius. */
-function visRadius(mass: number, scale: number): number {
+function visRadius(mass: number, scale: number, mult = 1): number {
   const logM = Math.max(0.5, Math.min(8, Math.log10(Math.max(mass, 1))));
-  return Math.max(4, (logM - 1) * 5 + 2) * scale;
+  return Math.max(4, (logM - 1) * 5 + 2) * mult * scale;
 }
 
 const ORBIT_DASH: number[] = [4, 6];
@@ -156,8 +178,9 @@ export class Renderer {
   // Starfield
   private stars: Star[];
 
-  // Collision pulses
+  // Collision pulses + splats
   private pulses: Pulse[] = [];
+  private splats: SplatEffect[] = [];
 
   // Gas particle system
   private _gasParticles: GasParticle[] = [];
@@ -169,6 +192,12 @@ export class Renderer {
   private _uniBuffer = new ArrayBuffer(32);
   private _uniF = new Float32Array(this._uniBuffer);
   private _uniU = new Uint32Array(this._uniBuffer);
+
+  // Per-body visual radius multiplier buffer (uploaded CPU→GPU each frame)
+  private multsBuffer!: GPUBuffer;
+  private _multsData = new Float32Array(MAX_BODIES);
+  // Last bodyStates — used by private draw methods that don't receive it directly
+  private _lastBodyStates: BodyState[] = [];
 
   // Bind group cache — physics ping-pong cycles through 2 buffers, cache both
   private _bindGroupCache: Map<GPUBuffer, GPUBindGroup> = new Map();
@@ -227,6 +256,14 @@ export class Renderer {
       size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // ── Mults buffer — visual radius multipliers, one f32 per body ──────────
+    this.multsBuffer = device.createBuffer({
+      size: MAX_BODIES * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this._multsData.fill(1.0);
+    device.queue.writeBuffer(this.multsBuffer, 0, this._multsData);
 
     // ── 2D overlay ──────────────────────────────────────────────────────────
     const ctx2d = overlayCanvas.getContext('2d');
@@ -302,10 +339,43 @@ export class Renderer {
 
   clearSpriteCache(): void {
     this._spriteCache.clear();
+    this._bindGroupCache.clear();
   }
 
   addPulse(bodyIndex: number): void {
     this.pulses.push({ idx: bodyIndex, startTime: performance.now() });
+  }
+
+  addSplat(pos: [number, number], mass: number, color: [number, number, number]): void {
+    const logM       = Math.max(1, Math.min(8, Math.log10(Math.max(mass, 1))));
+    const worldVR    = Math.max(4, (logM - 1) * 5 + 2);
+    // Particles travel ~4× body visual radius over 800 ms
+    const baseSpeed  = worldVR * 4 / 800;
+    const N          = Math.round(Math.min(24, Math.max(10, logM * 3.5)));
+    const colorStr   = `${color[0]},${color[1]},${color[2]}`;
+
+    const particles: SplatParticle[] = [];
+    for (let i = 0; i < N; i++) {
+      const angle = (i / N) * Math.PI * 2 + (Math.random() - 0.5) * 0.6;
+      const speed = baseSpeed * (0.4 + Math.random() * 1.2);
+      particles.push({
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        r:  1.8 + Math.random() * 2.4,
+        color: colorStr,
+      });
+    }
+
+    this.splats.push({
+      wx: pos[0],
+      wy: pos[1],
+      startTime:     performance.now(),
+      duration:      900,
+      flashDuration: 280,
+      particles,
+      ringColor:   colorStr,
+      flashRadius: worldVR * 2.5,
+    });
   }
 
   render(
@@ -324,6 +394,7 @@ export class Renderer {
     lagrangePoints: [number, number][] | null,
     orbitPaths: [number, number][][],
     attractors: number[],
+    followBodyIndex: number,
   ): void {
     const W = this.gpuCanvas.width;
     const H = this.gpuCanvas.height;
@@ -341,6 +412,9 @@ export class Renderer {
       }
     }
 
+    // ── Store body states for private draw methods ────────────────────────
+    this._lastBodyStates = bodyStates;
+
     // ── Update uniforms ───────────────────────────────────────────────────
     this._uniF[0] = camera.center[0];
     this._uniF[1] = camera.center[1];
@@ -352,6 +426,12 @@ export class Renderer {
     this._uniF[7] = 0;
     this.device.queue.writeBuffer(this.uniformBuffer, 0, this._uniBuffer);
 
+    // ── Upload visual radius multipliers ──────────────────────────────────
+    for (let i = 0; i < MAX_BODIES; i++) {
+      this._multsData[i] = (i < bodyStates.length) ? (bodyStates[i]?.visRadiusMult ?? 1.0) : 1.0;
+    }
+    this.device.queue.writeBuffer(this.multsBuffer, 0, this._multsData);
+
     // ── Bind group — cache per buffer reference (physics ping-pongs 2 bufs) ─
     let bindGroup = this._bindGroupCache.get(bodyBuffer);
     if (!bindGroup) {
@@ -360,6 +440,7 @@ export class Renderer {
         entries: [
           { binding: 0, resource: { buffer: bodyBuffer } },
           { binding: 1, resource: { buffer: this.uniformBuffer } },
+          { binding: 2, resource: { buffer: this.multsBuffer } },
         ],
       });
       this._bindGroupCache.set(bodyBuffer, bindGroup);
@@ -406,7 +487,8 @@ export class Renderer {
     }
 
     this.drawPlanetBodies(bodies, bodyStates, n, camera, W, H);
-    this.drawCollisionPulses(bodies, n, camera, W, H, now);
+    this.drawCollisionEffects(bodies, n, camera, W, H, now);
+    this.drawFollowRing(bodies, n, camera, W, H, followBodyIndex, now);
     this.drawHoverRing(bodies, n, camera, W, H, hoveredIndex);
     this.drawDragVector(dragState, camera, W, H);
     this.drawGhostBody(ghostBody, camera, W, H);
@@ -426,9 +508,13 @@ export class Renderer {
     this.drawBlackHoles(bodies, bodyStates, n, camera, W, H);
 
     // ── HUD ───────────────────────────────────────────────────────────────
+    const followName = (followBodyIndex >= 0 && followBodyIndex < bodyStates.length)
+      ? bodyStates[followBodyIndex].name
+      : null;
     this.hudEl.innerHTML =
       `<span class="label">BODIES</span> ${n}` +
       `<br><span class="label">SPEED</span>  ${timeScale.toFixed(1)}×` +
+      (followName ? `<br><span class="label">FOLLOW</span> ${followName}` : '') +
       (paused ? '<br><span class="ksp-status">● PAUSED</span>' : '');
   }
 
@@ -489,7 +575,7 @@ export class Renderer {
     }
   }
 
-  private drawCollisionPulses(
+  private drawCollisionEffects(
     bodies: BodyData[],
     n: number,
     camera: Camera,
@@ -498,24 +584,97 @@ export class Renderer {
     now: number,
   ): void {
     const c = this.ctx2d;
+
+    // ── Splat effects ────────────────────────────────────────────────────────
+    this.splats = this.splats.filter(splat => {
+      const elapsed = now - splat.startTime;
+      if (elapsed >= splat.duration) return false;
+      const t = elapsed / splat.duration;
+
+      // Central flash — bright disc that blooms then fades
+      if (elapsed < splat.flashDuration) {
+        const ft = elapsed / splat.flashDuration;
+        const flashAlpha = Math.sin(ft * Math.PI) * 0.85;
+        const [sx, sy] = worldToScreen([splat.wx, splat.wy], camera, W, H);
+        const flashR = splat.flashRadius * camera.scale * (0.6 + ft * 0.4);
+        const grad = c.createRadialGradient(sx, sy, 0, sx, sy, flashR);
+        grad.addColorStop(0,   `rgba(255,255,255,${flashAlpha.toFixed(3)})`);
+        grad.addColorStop(0.25, `rgba(${splat.ringColor},${(flashAlpha * 0.7).toFixed(3)})`);
+        grad.addColorStop(1,   `rgba(${splat.ringColor},0)`);
+        c.beginPath();
+        c.arc(sx, sy, flashR, 0, Math.PI * 2);
+        c.fillStyle = grad;
+        c.fill();
+      }
+
+      // Debris particles
+      c.save();
+      for (const p of splat.particles) {
+        const px = splat.wx + p.vx * elapsed;
+        const py = splat.wy + p.vy * elapsed;
+        const [sx, sy] = worldToScreen([px, py], camera, W, H);
+        const alpha = Math.max(0, (1 - t) * (1 - t));
+        const pr = Math.max(1, p.r * camera.scale * (1 - t * 0.4));
+        c.globalAlpha = alpha * 0.88;
+        c.fillStyle = `rgb(${p.color})`;
+        c.beginPath();
+        c.arc(sx, sy, pr, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.globalAlpha = 1;
+      c.restore();
+
+      return true;
+    });
+
+    // ── Shockwave rings ──────────────────────────────────────────────────────
     this.pulses = this.pulses.filter(pulse => {
-      const progress = (now - pulse.startTime) / 500;
+      const progress = (now - pulse.startTime) / 600;
       if (progress >= 1) return false;
       const bi = pulse.idx;
       if (bi >= n || bi >= bodies.length) return false;
 
       const body = bodies[bi];
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const r = visRadius(body.mass, camera.scale) * (1 + progress * 2);
-      const alpha = 1 - progress;
+      const _pulseMult = this._lastBodyStates[bi]?.visRadiusMult ?? 1;
+      const r = visRadius(body.mass, camera.scale, _pulseMult) * (1 + progress * 3);
+      const alpha = (1 - progress) * 0.8;
 
       c.beginPath();
       c.arc(sx, sy, r, 0, Math.PI * 2);
       c.strokeStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
-      c.lineWidth = 1.5;
+      c.lineWidth = 2;
       c.stroke();
       return true;
     });
+  }
+
+  private drawFollowRing(
+    bodies: BodyData[],
+    n: number,
+    camera: Camera,
+    W: number,
+    H: number,
+    followBodyIndex: number,
+    now: number,
+  ): void {
+    if (followBodyIndex < 0 || followBodyIndex >= n || followBodyIndex >= bodies.length) return;
+    const body = bodies[followBodyIndex];
+    const [sx, sy] = worldToScreen(body.pos, camera, W, H);
+    const _followMult = this._lastBodyStates[followBodyIndex]?.visRadiusMult ?? 1;
+    const r = visRadius(body.mass, camera.scale, _followMult);
+    const pulse = 0.5 + 0.5 * Math.sin(now / 700);
+    const alpha = (0.35 + pulse * 0.25).toFixed(3);
+    const c = this.ctx2d;
+    c.save();
+    c.setLineDash([5, 5]);
+    c.lineDashOffset = (now / 60) % 10;
+    c.strokeStyle = `rgba(80,200,255,${alpha})`;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.arc(sx, sy, r * 2.0, 0, Math.PI * 2);
+    c.stroke();
+    c.restore();
   }
 
   private drawHoverRing(
@@ -529,7 +688,8 @@ export class Renderer {
     if (hoveredIndex < 0 || hoveredIndex >= n) return;
     const body = bodies[hoveredIndex];
     const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-    const r = visRadius(body.mass, camera.scale) * 1.3;
+    const _hoverMult = this._lastBodyStates[hoveredIndex]?.visRadiusMult ?? 1;
+    const r = visRadius(body.mass, camera.scale, _hoverMult) * 1.3;
     const c = this.ctx2d;
     c.beginPath();
     c.arc(sx, sy, r, 0, Math.PI * 2);
@@ -803,7 +963,7 @@ export class Renderer {
       const state = states[i];
       if (!state) continue;
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const r = visRadius(body.mass, camera.scale);
+      const r = visRadius(body.mass, camera.scale, state?.visRadiusMult ?? 1);
       const labelY = sy - r - 4;
 
       const isSelected = i === selectedIdx;
@@ -1035,7 +1195,7 @@ export class Renderer {
       if (isBlackHole(body.mass, body.radius)) continue;
 
       const [sx, sy] = worldToScreen(body.pos, camera, W, H);
-      const vr = visRadius(body.mass, camera.scale);
+      const vr = visRadius(body.mass, camera.scale, state?.visRadiusMult ?? 1);
       const sprite   = this._getBodySprite(i, body, state);
       const drawSize = vr * 2.8 * 2;
       c.drawImage(sprite, sx - drawSize / 2, sy - drawSize / 2, drawSize, drawSize);
